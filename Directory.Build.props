@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <Product>Tiro v3</Product>
+    <Version>3.0.0-alpha.1</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <InformationalVersion>3.0.0-alpha.1+source.76a6f51f601ba6ebea4ddb83140cea4434d53e57</InformationalVersion>
+    <RepositoryUrl>file://https://github.com/pturner1976-dotcom/tiro</RepositoryUrl>
+  </PropertyGroup>
+</Project>

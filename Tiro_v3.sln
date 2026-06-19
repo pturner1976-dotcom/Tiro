@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{60E2605A-637B-4BB8-B0CE-810CF06755F1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tiro.Cli", "src\Tiro.Cli\Tiro.Cli.csproj", "{17882ABE-A9FB-4C18-BAC2-DD1418E71C97}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{A8492214-2664-462B-BE05-EDEE77612C1A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tiro.Cli.Tests", "tests\Tiro.Cli.Tests\Tiro.Cli.Tests.csproj", "{ECD06C0D-E190-4975-8214-A5EFB049F93F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{17882ABE-A9FB-4C18-BAC2-DD1418E71C97}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{17882ABE-A9FB-4C18-BAC2-DD1418E71C97}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{17882ABE-A9FB-4C18-BAC2-DD1418E71C97}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{17882ABE-A9FB-4C18-BAC2-DD1418E71C97}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ECD06C0D-E190-4975-8214-A5EFB049F93F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ECD06C0D-E190-4975-8214-A5EFB049F93F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ECD06C0D-E190-4975-8214-A5EFB049F93F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ECD06C0D-E190-4975-8214-A5EFB049F93F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{17882ABE-A9FB-4C18-BAC2-DD1418E71C97} = {60E2605A-637B-4BB8-B0CE-810CF06755F1}
+		{ECD06C0D-E190-4975-8214-A5EFB049F93F} = {A8492214-2664-462B-BE05-EDEE77612C1A}
+	EndGlobalSection
+EndGlobal
