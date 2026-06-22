@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -230,6 +231,56 @@ public sealed class TiroStore : IDisposable
             CREATE INDEX IF NOT EXISTS idx_recall_proxies_source_id ON recall_proxies(source_id);
             CREATE INDEX IF NOT EXISTS idx_recall_proxies_status ON recall_proxies(status);
             CREATE INDEX IF NOT EXISTS idx_recall_proxies_pointer_id ON recall_proxies(pointer_id);
+
+            CREATE TABLE IF NOT EXISTS semantic_embeddings (
+                embedding_id TEXT PRIMARY KEY,
+                target_lane TEXT NOT NULL,
+                target_kind TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                source_id TEXT,
+                document_id TEXT,
+                chunk_id TEXT,
+                session_id TEXT,
+                message_id INTEGER,
+                operational_record_id INTEGER,
+                fact_id INTEGER,
+                text_hash TEXT NOT NULL,
+                embedding_provider TEXT NOT NULL,
+                embedding_model TEXT NOT NULL,
+                dimensions INTEGER NOT NULL,
+                vector_blob BLOB NOT NULL,
+                created_utc TEXT NOT NULL,
+                indexed_utc TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_semantic_embeddings_target ON semantic_embeddings(target_lane, target_kind, target_id);
+            CREATE INDEX IF NOT EXISTS idx_semantic_embeddings_provider_model_status ON semantic_embeddings(embedding_provider, embedding_model, status);
+            CREATE INDEX IF NOT EXISTS idx_semantic_embeddings_source ON semantic_embeddings(source_id);
+            CREATE INDEX IF NOT EXISTS idx_semantic_embeddings_document ON semantic_embeddings(document_id);
+            CREATE INDEX IF NOT EXISTS idx_semantic_embeddings_session ON semantic_embeddings(session_id);
+            CREATE INDEX IF NOT EXISTS idx_semantic_embeddings_text_hash ON semantic_embeddings(text_hash);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_semantic_embeddings_active
+                ON semantic_embeddings(embedding_provider, embedding_model, target_lane, target_kind, target_id)
+                WHERE status = 'active';
+
+            CREATE TABLE IF NOT EXISTS semantic_index_runs (
+                run_id TEXT PRIMARY KEY,
+                started_utc TEXT NOT NULL,
+                completed_utc TEXT,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                target_lanes TEXT NOT NULL,
+                records_seen INTEGER NOT NULL DEFAULT 0,
+                records_indexed INTEGER NOT NULL DEFAULT 0,
+                records_skipped INTEGER NOT NULL DEFAULT 0,
+                records_failed INTEGER NOT NULL DEFAULT 0,
+                dry_run INTEGER NOT NULL DEFAULT 0,
+                errors_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL
+            );
+
+            UPDATE schema_info SET value = '2' WHERE key = 'schema_version' AND value = '1';
             """);
         EnsureColumn("messages", "source_identity", "TEXT NOT NULL DEFAULT ''");
     }
@@ -1494,6 +1545,339 @@ public sealed class TiroStore : IDisposable
         sqlite3_close_v2(_database);
     }
 
+    // --- Semantic embeddings ---
+
+    public static string ComputeTextHash(string text) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+
+    public static string BuildEmbeddingId(string provider, string model, string targetLane, string targetKind, string targetId, string textHash)
+    {
+        var sanitizedTargetId = SanitizeIdComponent(targetId);
+        return $"emb:{provider}:{model}:{targetLane}:{targetKind}:{sanitizedTargetId}:{textHash}";
+    }
+
+    private static string SanitizeIdComponent(string value)
+    {
+        var builder = new StringBuilder();
+        foreach (var character in value)
+        {
+            if (char.IsLetterOrDigit(character) || character is '_' or '-')
+            {
+                builder.Append(character);
+            }
+            else if (builder.Length == 0 || builder[^1] != '-')
+            {
+                builder.Append('-');
+            }
+        }
+
+        return builder.ToString().Trim('-');
+    }
+
+    public IReadOnlyList<EmbeddingTargetCandidate> ListCorpusChunksForEmbedding()
+    {
+        InitializeSchema();
+        using var statement = Prepare(
+            """
+            SELECT chunk_id, document_id, source_id, text
+            FROM chunks
+            ORDER BY document_id, chunk_index, chunk_id;
+            """);
+        var candidates = new List<EmbeddingTargetCandidate>();
+        while (statement.StepRow())
+        {
+            var chunkId = statement.ColumnText(0);
+            var documentId = statement.ColumnText(1);
+            var sourceId = statement.ColumnText(2);
+            var text = statement.ColumnText(3);
+            candidates.Add(new EmbeddingTargetCandidate("corpus", "chunk", chunkId, sourceId, documentId, chunkId, null, null, text));
+        }
+
+        return candidates;
+    }
+
+    public IReadOnlyList<EmbeddingTargetCandidate> ListSessionMessagesForEmbedding(string? sessionId)
+    {
+        InitializeSchema();
+        using var statement = sessionId is null
+            ? Prepare("SELECT message_id, session_id, text FROM messages ORDER BY session_id, timestamp_utc, message_id;")
+            : PrepareWithSessionFilter(sessionId);
+        var candidates = new List<EmbeddingTargetCandidate>();
+        while (statement.StepRow())
+        {
+            var messageId = statement.ColumnLong(0);
+            var sessionIdValue = statement.ColumnText(1);
+            var text = statement.ColumnText(2);
+            candidates.Add(new EmbeddingTargetCandidate(
+                "session", "message", messageId.ToString(CultureInfo.InvariantCulture), null, null, null, sessionIdValue, messageId, text));
+        }
+
+        return candidates;
+    }
+
+    private SqliteStatement PrepareWithSessionFilter(string sessionId)
+    {
+        var statement = Prepare("SELECT message_id, session_id, text FROM messages WHERE session_id = $session_id ORDER BY timestamp_utc, message_id;");
+        statement.BindText(1, sessionId);
+        return statement;
+    }
+
+    public string? GetActiveEmbeddingTextHash(string provider, string model, string targetLane, string targetKind, string targetId)
+    {
+        InitializeSchema();
+        using var statement = Prepare(
+            """
+            SELECT text_hash FROM semantic_embeddings
+            WHERE embedding_provider = $provider AND embedding_model = $model
+              AND target_lane = $lane AND target_kind = $kind AND target_id = $target_id
+              AND status = 'active'
+            LIMIT 1;
+            """);
+        statement.BindText(1, provider);
+        statement.BindText(2, model);
+        statement.BindText(3, targetLane);
+        statement.BindText(4, targetKind);
+        statement.BindText(5, targetId);
+        return statement.StepRow() ? statement.ColumnText(0) : null;
+    }
+
+    public void UpsertEmbedding(EmbeddingTargetCandidate candidate, string provider, string model, string textHash, float[] vector, DateTimeOffset now)
+    {
+        InitializeSchema();
+        ExecuteNonQuery("BEGIN TRANSACTION;");
+        try
+        {
+            using (var stale = Prepare(
+                """
+                UPDATE semantic_embeddings SET status = 'stale'
+                WHERE embedding_provider = $provider AND embedding_model = $model
+                  AND target_lane = $lane AND target_kind = $kind AND target_id = $target_id
+                  AND status = 'active';
+                """))
+            {
+                stale.BindText(1, provider);
+                stale.BindText(2, model);
+                stale.BindText(3, candidate.TargetLane);
+                stale.BindText(4, candidate.TargetKind);
+                stale.BindText(5, candidate.TargetId);
+                stale.StepDone();
+            }
+
+            var embeddingId = BuildEmbeddingId(provider, model, candidate.TargetLane, candidate.TargetKind, candidate.TargetId, textHash);
+            var vectorBlob = SemanticVectorCodec.Encode(vector);
+            using (var insert = Prepare(
+                """
+                INSERT INTO semantic_embeddings
+                    (embedding_id, target_lane, target_kind, target_id, source_id, document_id, chunk_id, session_id, message_id,
+                     text_hash, embedding_provider, embedding_model, dimensions, vector_blob, created_utc, indexed_utc, status)
+                VALUES
+                    ($embedding_id, $target_lane, $target_kind, $target_id, $source_id, $document_id, $chunk_id, $session_id, $message_id,
+                     $text_hash, $provider, $model, $dimensions, $vector_blob, $created_utc, $indexed_utc, 'active');
+                """))
+            {
+                insert.BindText(1, embeddingId);
+                insert.BindText(2, candidate.TargetLane);
+                insert.BindText(3, candidate.TargetKind);
+                insert.BindText(4, candidate.TargetId);
+                BindNullableText(insert, 5, candidate.SourceId);
+                BindNullableText(insert, 6, candidate.DocumentId);
+                BindNullableText(insert, 7, candidate.ChunkId);
+                BindNullableText(insert, 8, candidate.SessionId);
+                if (candidate.MessageId.HasValue)
+                {
+                    insert.BindInt64(9, candidate.MessageId.Value);
+                }
+                else
+                {
+                    insert.BindNull(9);
+                }
+                insert.BindText(10, textHash);
+                insert.BindText(11, provider);
+                insert.BindText(12, model);
+                insert.BindInt(13, vector.Length);
+                insert.BindBlob(14, vectorBlob);
+                insert.BindText(15, FormatTimestamp(now));
+                insert.BindText(16, FormatTimestamp(now));
+                insert.StepDone();
+            }
+
+            ExecuteNonQuery("COMMIT;");
+        }
+        catch
+        {
+            ExecuteNonQuery("ROLLBACK;");
+            throw;
+        }
+    }
+
+    private static void BindNullableText(SqliteStatement statement, int index, string? value)
+    {
+        if (value is null)
+        {
+            statement.BindNull(index);
+        }
+        else
+        {
+            statement.BindText(index, value);
+        }
+    }
+
+    public IReadOnlyList<StoredEmbedding> ListActiveEmbeddings(string provider, string model, IReadOnlyList<string> lanes)
+    {
+        InitializeSchema();
+        if (lanes.Count == 0)
+        {
+            return Array.Empty<StoredEmbedding>();
+        }
+
+        var placeholders = string.Join(",", lanes.Select((_, i) => $"$lane{i}"));
+        using var statement = Prepare(
+            $"""
+            SELECT embedding_id, target_lane, target_kind, target_id, source_id, document_id, chunk_id, session_id, message_id,
+                   text_hash, embedding_provider, embedding_model, dimensions, vector_blob
+            FROM semantic_embeddings
+            WHERE embedding_provider = $provider AND embedding_model = $model AND status = 'active'
+              AND target_lane IN ({placeholders});
+            """);
+        statement.BindText(1, provider);
+        statement.BindText(2, model);
+        for (var i = 0; i < lanes.Count; i++)
+        {
+            statement.BindText(3 + i, lanes[i]);
+        }
+
+        var results = new List<StoredEmbedding>();
+        while (statement.StepRow())
+        {
+            results.Add(new StoredEmbedding(
+                statement.ColumnText(0),
+                statement.ColumnText(1),
+                statement.ColumnText(2),
+                statement.ColumnText(3),
+                statement.ColumnTextOrNull(4),
+                statement.ColumnTextOrNull(5),
+                statement.ColumnTextOrNull(6),
+                statement.ColumnTextOrNull(7),
+                statement.ColumnInt64OrNull(8),
+                statement.ColumnText(9),
+                statement.ColumnText(10),
+                statement.ColumnText(11),
+                statement.ColumnInt(12),
+                statement.ColumnBlob(13),
+                ResolveSnippet(statement.ColumnText(1), statement.ColumnText(3))));
+        }
+
+        return results;
+    }
+
+    private string ResolveSnippet(string targetLane, string targetId)
+    {
+        if (targetLane == "corpus")
+        {
+            using var statement = Prepare("SELECT text FROM chunks WHERE chunk_id = $chunk_id LIMIT 1;");
+            statement.BindText(1, targetId);
+            return statement.StepRow() ? Truncate(statement.ColumnText(0)) : string.Empty;
+        }
+
+        if (targetLane == "session" && long.TryParse(targetId, out var messageId))
+        {
+            using var statement = Prepare("SELECT text FROM messages WHERE message_id = $message_id LIMIT 1;");
+            statement.BindInt64(1, messageId);
+            return statement.StepRow() ? Truncate(statement.ColumnText(0)) : string.Empty;
+        }
+
+        return string.Empty;
+    }
+
+    private static string Truncate(string text) => text.Length > 280 ? $"{text[..280]}…" : text;
+
+    public SemanticEmbeddingStats GetEmbeddingStats()
+    {
+        InitializeSchema();
+        var embeddingCount = CountRows("semantic_embeddings");
+        var activeCount = (int)CountRowsWhere("semantic_embeddings", "status = 'active'");
+        var lanes = new List<string>();
+        using var statement = Prepare("SELECT DISTINCT target_lane FROM semantic_embeddings WHERE status = 'active' ORDER BY target_lane;");
+        while (statement.StepRow())
+        {
+            lanes.Add(statement.ColumnText(0));
+        }
+
+        return new SemanticEmbeddingStats(embeddingCount, activeCount, lanes);
+    }
+
+    private long CountRowsWhere(string tableName, string whereClause)
+    {
+        using var statement = Prepare($"SELECT COUNT(*) FROM {tableName} WHERE {whereClause};");
+        return statement.StepRow() ? statement.ColumnLong(0) : 0;
+    }
+
+    public void RecordIndexRun(SemanticIndexRunSummary run)
+    {
+        InitializeSchema();
+        using var statement = Prepare(
+            """
+            INSERT INTO semantic_index_runs
+                (run_id, started_utc, completed_utc, provider, model, target_lanes,
+                 records_seen, records_indexed, records_skipped, records_failed, dry_run, errors_json, status)
+            VALUES
+                ($run_id, $started_utc, $completed_utc, $provider, $model, $target_lanes,
+                 $records_seen, $records_indexed, $records_skipped, $records_failed, $dry_run, '[]', $status);
+            """);
+        statement.BindText(1, run.RunId);
+        statement.BindText(2, FormatTimestamp(run.StartedUtc));
+        if (run.CompletedUtc.HasValue)
+        {
+            statement.BindText(3, FormatTimestamp(run.CompletedUtc.Value));
+        }
+        else
+        {
+            statement.BindNull(3);
+        }
+        statement.BindText(4, run.Provider);
+        statement.BindText(5, run.Model);
+        statement.BindText(6, run.TargetLanes);
+        statement.BindInt(7, run.RecordsSeen);
+        statement.BindInt(8, run.RecordsIndexed);
+        statement.BindInt(9, run.RecordsSkipped);
+        statement.BindInt(10, run.RecordsFailed);
+        statement.BindInt(11, run.DryRun ? 1 : 0);
+        statement.BindText(12, run.Status);
+        statement.StepDone();
+    }
+
+    public SemanticIndexRunSummary? GetLastIndexRun()
+    {
+        InitializeSchema();
+        using var statement = Prepare(
+            """
+            SELECT run_id, started_utc, completed_utc, provider, model, target_lanes,
+                   records_seen, records_indexed, records_skipped, records_failed, dry_run, status
+            FROM semantic_index_runs
+            ORDER BY started_utc DESC
+            LIMIT 1;
+            """);
+        if (!statement.StepRow())
+        {
+            return null;
+        }
+
+        var completedUtc = statement.ColumnTextOrNull(2);
+        return new SemanticIndexRunSummary(
+            statement.ColumnText(0),
+            ParseTimestamp(statement.ColumnText(1)),
+            completedUtc is null ? null : ParseTimestamp(completedUtc),
+            statement.ColumnText(3),
+            statement.ColumnText(4),
+            statement.ColumnText(5),
+            statement.ColumnInt(6),
+            statement.ColumnInt(7),
+            statement.ColumnInt(8),
+            statement.ColumnInt(9),
+            statement.ColumnInt(10) != 0,
+            statement.ColumnText(11));
+    }
+
     // --- Fact lifecycle management ---
 
     public FactRecord AddFact(
@@ -2271,6 +2655,12 @@ public sealed class TiroStore : IDisposable
             ThrowIfNotOk(result);
         }
 
+        public void BindBlob(int index, byte[] value)
+        {
+            var result = sqlite3_bind_blob(_statement, index, value, value.Length, SqliteTransient);
+            ThrowIfNotOk(result);
+        }
+
         public bool StepRow()
         {
             var result = sqlite3_step(_statement);
@@ -2311,6 +2701,20 @@ public sealed class TiroStore : IDisposable
         {
             var pointer = sqlite3_column_text(_statement, index);
             return pointer == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(pointer);
+        }
+
+        public byte[] ColumnBlob(int index)
+        {
+            var length = sqlite3_column_bytes(_statement, index);
+            if (length <= 0)
+            {
+                return Array.Empty<byte>();
+            }
+
+            var pointer = sqlite3_column_blob(_statement, index);
+            var buffer = new byte[length];
+            Marshal.Copy(pointer, buffer, 0, length);
+            return buffer;
         }
 
         public void Dispose()
@@ -2370,6 +2774,13 @@ public sealed class TiroStore : IDisposable
 
     [DllImport("libsqlite3.so.0", CallingConvention = CallingConvention.Cdecl)]
     private static extern int sqlite3_bind_null(IntPtr stmt, int index);
+
+    [DllImport("libsqlite3.so.0", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_bind_blob(IntPtr statement, int index, byte[] value, int length, IntPtr destructor);
+    [DllImport("libsqlite3.so.0", CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr sqlite3_column_blob(IntPtr statement, int index);
+    [DllImport("libsqlite3.so.0", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_column_bytes(IntPtr statement, int index);
 
     private const int SqliteNull = 5;
 }

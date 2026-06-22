@@ -1762,7 +1762,11 @@ static PlannerRunResult SemanticPlanner(
         null,
         expandedQueries.Count > 1 ? "multi_query_union" : "single_query",
         "medium",
-        new[] { "Broad semantic planner expansion remains advisory." });
+        new[] { "Broad semantic planner expansion remains advisory." },
+        "unclear",
+        "none",
+        false,
+        Array.Empty<string>());
     return PlannerRunResult.Used(
         config,
         originalQuery,

@@ -7,6 +7,8 @@ var jsonOptions = new JsonSerializerOptions
     WriteIndented = true
 };
 
+using var SharedHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+
 try
 {
     var options = CliOptions.Parse(args);
@@ -319,6 +321,99 @@ try
         return;
     }
 
+    if (options.Command == "semantic-status")
+    {
+        var statusResponse = new SemanticStatusService().GetStatus(options.DatabasePath, EmbeddingConfig.Load());
+        Console.WriteLine(JsonSerializer.Serialize(statusResponse, jsonOptions));
+        return;
+    }
+
+    if (options.Command == "semantic-index")
+    {
+        var commandOptions = ParseCommandOptions(options.Arguments);
+        var lanes = ParseLanes(GetValue(commandOptions, "lanes"));
+        var rebuild = GetBool(commandOptions, "rebuild");
+        var dryRun = GetBool(commandOptions, "dry-run");
+        var indexLimit = GetInt(commandOptions, "limit");
+        var embeddingConfig = EmbeddingConfig.Load();
+
+        if (!dryRun && !embeddingConfig.Enabled)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(
+                new SemanticIndexResponse(
+                    "disabled",
+                    new SemanticIndexRunSummary(string.Empty, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, embeddingConfig.Provider, embeddingConfig.Model, string.Join(",", lanes), 0, 0, 0, 0, false, "disabled"),
+                    new[] { "Semantic search is disabled (TIRO_SEMANTIC_ENABLED is not \"true\"); no provider call was made. Use --dry-run to preview candidates without enabling semantic search." }),
+                jsonOptions));
+            return;
+        }
+
+        IEmbeddingClient? indexClient = null;
+        if (!dryRun)
+        {
+            var apiKey = embeddingConfig.GetApiKey();
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(
+                    new SemanticIndexResponse(
+                        "validation_error",
+                        new SemanticIndexRunSummary(string.Empty, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, embeddingConfig.Provider, embeddingConfig.Model, string.Join(",", lanes), 0, 0, 0, 0, false, "validation_error"),
+                        new[] { $"Embedding provider ({embeddingConfig.Provider}) key ({embeddingConfig.KeyName}) is not configured; no provider call was made." }),
+                    jsonOptions));
+                return;
+            }
+
+            indexClient = new OpenAiEmbeddingClient(SharedHttpClient, apiKey, embeddingConfig.Model);
+        }
+
+        var indexResponse = await new SemanticIndexService().IndexAsync(
+            options.DatabasePath, lanes, rebuild, dryRun, indexLimit, embeddingConfig, indexClient, CancellationToken.None);
+        Console.WriteLine(JsonSerializer.Serialize(indexResponse, jsonOptions));
+        return;
+    }
+
+    if (options.Command == "semantic-query")
+    {
+        RequireArgument(options, "semantic-query <query> [--limit <n>] [--min-score <f>] [--lanes corpus,session]");
+        var commandOptions = ParseCommandOptions(options.Arguments.Skip(1).ToArray());
+        var semanticConfig = EmbeddingConfig.Load();
+        var lanes = ParseLanes(GetValue(commandOptions, "lanes"));
+        var minScore = GetDouble(commandOptions, "min-score") ?? semanticConfig.MinScore;
+        IEmbeddingClient? queryClient = null;
+        var apiKey = semanticConfig.GetApiKey();
+        if (semanticConfig.Enabled && !string.IsNullOrWhiteSpace(apiKey))
+        {
+            queryClient = new OpenAiEmbeddingClient(SharedHttpClient, apiKey, semanticConfig.Model);
+        }
+
+        var semanticResponse = await new SemanticSearchService().SearchAsync(
+            options.DatabasePath, options.Arguments[0], options.Limit, minScore, lanes, semanticConfig, queryClient, CancellationToken.None);
+        Console.WriteLine(JsonSerializer.Serialize(semanticResponse, jsonOptions));
+        return;
+    }
+
+    if (options.Command == "hybrid-search")
+    {
+        RequireArgument(options, "hybrid-search <query> [--limit <n>] [--lanes corpus,session] [--lexical-weight <f>] [--semantic-weight <f>] [--min-semantic-score <f>]");
+        var commandOptions = ParseCommandOptions(options.Arguments.Skip(1).ToArray());
+        var hybridConfig = EmbeddingConfig.Load();
+        var lanes = ParseLanes(GetValue(commandOptions, "lanes"));
+        var lexicalWeight = GetDouble(commandOptions, "lexical-weight") ?? 0.55;
+        var semanticWeight = GetDouble(commandOptions, "semantic-weight") ?? 0.45;
+        var minSemanticScore = GetDouble(commandOptions, "min-semantic-score") ?? hybridConfig.MinScore;
+        IEmbeddingClient? hybridClient = null;
+        var hybridApiKey = hybridConfig.GetApiKey();
+        if (hybridConfig.Enabled && !string.IsNullOrWhiteSpace(hybridApiKey))
+        {
+            hybridClient = new OpenAiEmbeddingClient(SharedHttpClient, hybridApiKey, hybridConfig.Model);
+        }
+
+        var hybridResponse = await new HybridSearchService().SearchAsync(
+            options.DatabasePath, options.Arguments[0], options.Limit, lanes, lexicalWeight, semanticWeight, minSemanticScore, hybridConfig, hybridClient, CancellationToken.None);
+        Console.WriteLine(JsonSerializer.Serialize(hybridResponse, jsonOptions));
+        return;
+    }
+
     using var store = TiroStore.Open(options.DatabasePath);
 
     switch (options.Command)
@@ -585,6 +680,10 @@ static void WriteHelp()
     Console.WriteLine("  tiro [--db <path>] fact-supersede <superseding_fact_id> <superseded_fact_id>");
     Console.WriteLine("  tiro [--db <path>] fact-conflict <fact_id_1> <fact_id_2>");
     Console.WriteLine("  tiro [--db <path>] stats");
+    Console.WriteLine("  tiro [--db <path>] semantic-status");
+    Console.WriteLine("  tiro [--db <path>] semantic-index [--lanes corpus,session] [--rebuild] [--dry-run] [--limit <n>]");
+    Console.WriteLine("  tiro [--db <path>] [--limit <n>] semantic-query <query> [--min-score <f>] [--lanes corpus,session]");
+    Console.WriteLine("  tiro [--db <path>] [--limit <n>] hybrid-search <query> [--lanes corpus,session] [--lexical-weight <f>] [--semantic-weight <f>] [--min-semantic-score <f>]");
     Console.WriteLine("  tiro version");
     Console.WriteLine();
     Console.WriteLine("Notes:");
@@ -598,6 +697,8 @@ static void WriteHelp()
     Console.WriteLine("  Planner secrets use GEMINI_API_KEY from process env, then ~/.env/Tiro_v1.env.");
     Console.WriteLine("  Planner model defaults to gemini-2.5-flash; override with GEMINI_PLANNER_MODEL.");
     Console.WriteLine("  Query output is a structured context packet with source provenance.");
+    Console.WriteLine("  Semantic search is native v3 vector retrieval, separate from lexical search and the planner; disabled by default via TIRO_SEMANTIC_ENABLED.");
+    Console.WriteLine("  Semantic/hybrid commands never call an embedding provider unless TIRO_SEMANTIC_ENABLED=true and a provider key is configured.");
 }
 
 static void WriteVersion()
@@ -678,7 +779,7 @@ static Dictionary<string, string> ParseCommandOptions(IReadOnlyList<string> argu
             throw new InvalidOperationException("Option name is required.");
         }
 
-        if (key is "latest" or "force" or "rebuild")
+        if (key is "latest" or "force" or "rebuild" or "dry-run")
         {
             result[key] = "true";
             continue;
@@ -749,6 +850,44 @@ static bool GetBool(IReadOnlyDictionary<string, string> options, string key)
         && (value.Equals("true", StringComparison.OrdinalIgnoreCase)
             || value.Equals("1", StringComparison.Ordinal)
             || value.Equals("yes", StringComparison.OrdinalIgnoreCase));
+}
+
+static double? GetDouble(IReadOnlyDictionary<string, string> options, string key)
+{
+    var value = GetValue(options, key);
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+
+    if (!double.TryParse(value, out var parsed))
+    {
+        throw new InvalidOperationException($"--{key} must be a number.");
+    }
+
+    return parsed;
+}
+
+static IReadOnlyList<string> ParseLanes(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return new[] { "corpus", "session" };
+    }
+
+    var lanes = value
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(lane => lane.ToLowerInvariant())
+        .Where(lane => lane is "corpus" or "session")
+        .Distinct()
+        .ToArray();
+
+    if (lanes.Length == 0)
+    {
+        throw new InvalidOperationException("--lanes must include at least one of: corpus, session.");
+    }
+
+    return lanes;
 }
 
 static int CountEvidence(ContextPacket packet)

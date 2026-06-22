@@ -124,7 +124,12 @@ public sealed class GeminiPlannerClient : IRetrievalPlannerClient
             "Required keys: search_query, refined_terms, packet_focus, semantic_intent, expanded_queries, expanded_terms, target_lanes, required_entities, optional_entities, likely_session_scope, retrieval_strategy, confidence, planner_warnings. " +
             "Allowed semantic_intent: exact_lookup, topic_search, session_recall, session_summary, operational_recall, decision_lookup, warning_lookup, unknown_lookup, current_state, archive_lookup, negative_control, unclear. " +
             "Allowed target_lanes: corpus, session, operational, lifecycle. Allowed retrieval_strategy: single_query, multi_query_union, session_direct_summary, lane_focused, exact_term. " +
-            "Use short lexical-search-friendly expanded_queries, max 5. Use expanded_terms max 25. Preserve named entities from the query. Mark broad saved-session summary requests as session_summary or session_recall.\n" +
+            "Use short lexical-search-friendly expanded_queries, max 5. Use expanded_terms max 25. Preserve named entities from the query. Mark broad saved-session summary requests as session_summary or session_recall. " +
+            "Optionally also include retrieval_mode, semantic_usefulness, requires_exact_terms, suggested_lanes — these are advisory hints only, consumed by other tooling, and never trigger any action themselves. " +
+            "Allowed retrieval_mode: lexical, semantic, hybrid, phrase, inspect, unclear. Use phrase/lexical for exact-phrase or quoted requests; suggest hybrid only for vague/fuzzy-wording requests; use semantic only if the query is clearly about meaning rather than exact wording. " +
+            "Allowed semantic_usefulness: high, medium, low, none — how much a meaning-based (not exact-wording) search would plausibly help this query. " +
+            "Set requires_exact_terms true only if the query quotes or clearly demands an exact phrase/string. suggested_lanes uses the same allowed values as target_lanes. " +
+            "If the query concerns facts, decisions, or warnings with lifecycle risk (the kind that can be stale, superseded, or conflicting), set semantic_usefulness no higher than low and note the lifecycle risk in planner_warnings, since meaning-based matching alone cannot tell which version is current.\n" +
             $"User query: {query}\n" +
             $"Deterministic terms: {string.Join(", ", deterministicTerms)}";
 
@@ -196,7 +201,16 @@ public sealed record PlannerAdvice(
     string? LikelySessionScope,
     string RetrievalStrategy,
     string Confidence,
-    IReadOnlyList<string> PlannerWarnings)
+    IReadOnlyList<string> PlannerWarnings,
+    // Advisory-only retrieval-mode metadata added in WP4C. Nothing in
+    // SemanticSearchService/HybridSearchService reads these — they exist so
+    // a future caller (e.g. an Eve tool wrapper) can show the planner's
+    // suggestion without the planner ever touching TIRO_SEMANTIC_ENABLED or
+    // making an embedding call itself. See docs/WP4C_NATIVE_SEMANTIC_ENGINE_DESIGN.md.
+    string RetrievalMode,
+    string SemanticUsefulness,
+    bool RequiresExactTerms,
+    IReadOnlyList<string> SuggestedLanes)
 {
     public PlannerAdvice(string searchQuery, IReadOnlyList<string> refinedTerms, IReadOnlyList<string> packetFocus)
         : this(searchQuery, refinedTerms, packetFocus, Array.Empty<string>())
@@ -218,7 +232,11 @@ public sealed record PlannerAdvice(
             null,
             "single_query",
             "low",
-            warnings)
+            warnings,
+            "unclear",
+            "none",
+            false,
+            Array.Empty<string>())
     {
     }
 
@@ -281,7 +299,11 @@ public sealed record PlannerAdvice(
             SanitizeOptional(raw.LikelySessionScope),
             SanitizeChoice(raw.RetrievalStrategy, AllowedStrategies, "single_query"),
             SanitizeChoice(raw.Confidence, AllowedConfidence, "low"),
-            SanitizeWarnings(raw.PlannerWarnings).Concat(warnings).Distinct(StringComparer.Ordinal).Take(6).ToArray());
+            SanitizeWarnings(raw.PlannerWarnings).Concat(warnings).Distinct(StringComparer.Ordinal).Take(6).ToArray(),
+            SanitizeChoice(raw.RetrievalMode, AllowedRetrievalModes, "unclear"),
+            SanitizeChoice(raw.SemanticUsefulness, AllowedSemanticUsefulness, "none"),
+            raw.RequiresExactTerms ?? false,
+            SanitizeChoiceList(raw.SuggestedLanes, AllowedLanes, 4));
     }
 
     private static void RequireSemantic<T>(T? value, string name)
@@ -466,6 +488,14 @@ public sealed record PlannerAdvice(
     {
         "low", "medium", "high"
     };
+    private static readonly HashSet<string> AllowedRetrievalModes = new(StringComparer.Ordinal)
+    {
+        "lexical", "semantic", "hybrid", "phrase", "inspect", "unclear"
+    };
+    private static readonly HashSet<string> AllowedSemanticUsefulness = new(StringComparer.Ordinal)
+    {
+        "high", "medium", "low", "none"
+    };
 }
 
 public sealed record PlannerRunResult(
@@ -641,6 +671,7 @@ internal sealed record PlannerResponseSchema(
     public static PlannerResponseSchema Create()
     {
         var stringSchema = new PlannerResponseSchema("string", null, null, null, null);
+        var booleanSchema = new PlannerResponseSchema("boolean", null, null, null, null);
         var stringArray = new PlannerResponseSchema("array", null, stringSchema, null, null);
         return new PlannerResponseSchema(
             "object",
@@ -659,11 +690,16 @@ internal sealed record PlannerResponseSchema(
                 ["likely_session_scope"] = stringSchema,
                 ["retrieval_strategy"] = stringSchema,
                 ["confidence"] = stringSchema,
-                ["planner_warnings"] = stringArray
+                ["planner_warnings"] = stringArray,
+                // Advisory-only retrieval-mode metadata (WP4C) — optional, not in `required`.
+                ["retrieval_mode"] = stringSchema,
+                ["semantic_usefulness"] = stringSchema,
+                ["requires_exact_terms"] = booleanSchema,
+                ["suggested_lanes"] = stringArray
             },
             null,
             new[] { "search_query", "refined_terms", "packet_focus", "semantic_intent", "expanded_queries", "expanded_terms", "target_lanes", "required_entities", "optional_entities", "retrieval_strategy", "confidence", "planner_warnings" },
-            new[] { "search_query", "refined_terms", "packet_focus", "semantic_intent", "expanded_queries", "expanded_terms", "target_lanes", "required_entities", "optional_entities", "likely_session_scope", "retrieval_strategy", "confidence", "planner_warnings", "warnings" });
+            new[] { "search_query", "refined_terms", "packet_focus", "semantic_intent", "expanded_queries", "expanded_terms", "target_lanes", "required_entities", "optional_entities", "likely_session_scope", "retrieval_strategy", "confidence", "planner_warnings", "warnings", "retrieval_mode", "semantic_usefulness", "requires_exact_terms", "suggested_lanes" });
     }
 }
 
@@ -687,4 +723,8 @@ internal sealed record RawPlannerAdvice(
     [property: JsonPropertyName("likely_session_scope")] string? LikelySessionScope,
     [property: JsonPropertyName("retrieval_strategy")] string? RetrievalStrategy,
     [property: JsonPropertyName("confidence")] string? Confidence,
-    [property: JsonPropertyName("planner_warnings")] IReadOnlyList<string>? PlannerWarnings);
+    [property: JsonPropertyName("planner_warnings")] IReadOnlyList<string>? PlannerWarnings,
+    [property: JsonPropertyName("retrieval_mode")] string? RetrievalMode,
+    [property: JsonPropertyName("semantic_usefulness")] string? SemanticUsefulness,
+    [property: JsonPropertyName("requires_exact_terms")] bool? RequiresExactTerms,
+    [property: JsonPropertyName("suggested_lanes")] IReadOnlyList<string>? SuggestedLanes);
