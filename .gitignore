@@ -32,6 +32,13 @@ coverage/
 *.trx
 *.coveragexml
 
+# Internal/operational docs — reviewed separately before publication
+docs/technical/
+docs/memory_model.md
+docs/public_surface.md
+docs/retrieval_hydration_packing.md
+docs/testing_memory_loop.md
+
 # Runtime data — never commit
 *.sqlite3
 *.sqlite3-shm
