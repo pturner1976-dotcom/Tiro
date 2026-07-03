@@ -1,198 +1,298 @@
-# Tiro v3
+# Tiro
 
-Derived from the proven Tiro v1 codebase and transplanted into a standalone workspace for
-controlled repackaging and parity validation. Until parity and integration gates
-pass, Tiro v1 remains the known-good oracle.
+A standalone local memory and retrieval engine for AI agents, built on .NET 8 and SQLite with **zero external dependencies**.
 
-## M013 memory standardization
+Tiro keeps corpus retrieval, session memory, structured operational memory, and lifecycle-aware facts distinct — then assembles them into compact, structured JSON context packets that an AI agent can use directly. It is designed to be the memory spine of a long-running agent: deterministic, evidence-first, and inspectable.
 
-Canonical operator surfaces are documented in `docs/public_surface.md`, the lane model is documented in `docs/memory_model.md`, and retrieval/hydration/packing boundaries are documented in `docs/retrieval_hydration_packing.md`.
+---
 
-Useful memory-loop checks:
+## Why Tiro
 
-```bash
-scripts/tiro_stats.sh
-scripts/tiro_direct_smoke.sh
-scripts/tiro_wrapper_smoke.sh
-scripts/tiro_memory_proof.sh
-scripts/tiro_session_checkpoint_smoke.sh
-scripts/tiro_latest_session_smoke.sh
-```
+Most RAG tooling either couples tightly to a specific LLM framework or pulls in a long chain of external dependencies. Tiro does neither. The entire retrieval pipeline — lexical scoring, semantic search, query planning, fact lifecycle tracking, session memory — runs locally with nothing beyond the .NET standard library and SQLite via a direct P/Invoke to `libsqlite3`.
 
-The canonical local DB is `/home/SiliconMagician/Tiro_v1/data/tiro.sqlite3`. AIChat wrappers load `/home/SiliconMagician/.config/aichat/.env` when run directly and require `TIRO_DB_PATH` to point at an existing DB.
+Key design decisions:
 
-Saved AIChat sessions can be inspected with `inspect-aichat-sessions` and checkpointed with `ingest-aichat-session --latest`; explicit `--file` and `--session-id` override detection.
+- **Hybrid retrieval** — combines deterministic lexical scoring with optional vector semantic search (Ollama or OpenAI embeddings), merged by configurable lane weights
+- **Lifecycle-aware facts** — facts carry explicit status (`active`, `stale`, `superseded`, `conflicting`, `expired`) and are scored accordingly in retrieval packets
+- **Intent-driven retrieval policy** — query terms are analysed at runtime to select a retrieval mode (`current-state`, `decision`, `archive`, `fact-lifecycle`, etc.) that weights evidence accordingly
+- **Optional LLM query planning** — a bounded Gemini call can refine lexical terms before retrieval; it is purely advisory and Tiro always falls back to deterministic retrieval if the planner fails
+- **Structured JSON output** — every command emits a machine-readable JSON object, making Tiro trivially wrappable as a tool for any LLM agent framework
+- **No external NuGet dependencies** — the entire codebase runs on the .NET 8 standard library
 
-M015 expands the Gemini planner from single query refinement into bounded semantic retrieval advice. Planner output remains advisory: Tiro executes expanded lexical queries deterministically, deduplicates evidence, preserves explicit filters, and reports expansion diagnostics in `search-debug`.
+---
 
-Tiro is a standalone local memory/RAG spine. It keeps corpus retrieval, session/state memory, structured operational memory, and lifecycle-aware facts distinct while assembling compact context packets.
+## Getting Started
 
-## Runtime Choice
+### Requirements
 
-Tiro uses C# on .NET 8. This matches the useful legacy salvage evidence while keeping Tiro standalone. No runtime namespaces, UI, TTS, AIChat integration, web retrieval, embeddings, or external reranking are included.
+- .NET 8 SDK
+- SQLite (`libsqlite3`) — present by default on Linux/macOS; on Windows install the [SQLite runtime](https://sqlite.org/download.html)
+- For semantic search: [Ollama](https://ollama.com) (local) or an OpenAI API key
 
-SQLite is accessed through the local `libsqlite3.so.0` library from the .NET executable, so no remote service is required.
-
-## Build
+### Build
 
 ```bash
-dotnet build TiroV1.sln
+dotnet build Tiro.sln
 ```
 
-## CLI
-
-Default database path is `data/tiro.sqlite3` relative to the current working directory. Override it with `--db <path>`.
+### Quick start
 
 ```bash
-dotnet run --project src/Tiro.Cli -- init
-dotnet run --project src/Tiro.Cli -- ingest-chunks tests/fixtures/m002_chunks.jsonl
-dotnet run --project src/Tiro.Cli -- ingest-chunks tests/fixtures/m003_retrieval_chunks.jsonl
-dotnet run --project src/Tiro.Cli -- --planner off --limit 2 query provenance retrieval
-dotnet run --project src/Tiro.Cli -- --planner off --source-id source:m003-quality-notes-txt-fixture-m003-quality-notes-txt query provenance retrieval
-dotnet run --project src/Tiro.Cli -- --planner off --document-id m003_quality --context-window 1 query packets confidence warnings sources
-dotnet run --project src/Tiro.Cli -- session-create session-alpha
-dotnet run --project src/Tiro.Cli -- session-ingest session-alpha user cli:user Remember deployment token rotation is current state
-dotnet run --project src/Tiro.Cli -- --limit 4 session-recent session-alpha
-dotnet run --project src/Tiro.Cli -- --limit 2 session-query session-alpha deployment token
-dotnet run --project src/Tiro.Cli -- --planner off --session-id session-alpha query deployment provenance
-dotnet run --project src/Tiro.Cli -- --session-id session-alpha decision-add cli:manual Use explicit provenance for deployment decisions
-dotnet run --project src/Tiro.Cli -- --session-id session-alpha todo-add cli:manual Rotate deployment token before launch
-dotnet run --project src/Tiro.Cli -- --session-id session-alpha unknown-add cli:manual Deployment owner is not confirmed
-dotnet run --project src/Tiro.Cli -- --session-id session-alpha warning-add cli:manual Token rotation is blocked until owner confirms
-dotnet run --project src/Tiro.Cli -- --session-id session-alpha decision-list
-dotnet run --project src/Tiro.Cli -- --planner auto --limit 2 query provenance retrieval
-dotnet run --project src/Tiro.Cli -- stats
+# Initialise a new database
+dotnet run --project src/Tiro.Cli -- init --db ./mydata/tiro.sqlite3
+
+# Ingest a corpus from a JSONL file (one chunk object per line)
+dotnet run --project src/Tiro.Cli -- ingest-chunks corpus.jsonl --db ./mydata/tiro.sqlite3
+
+# Run a retrieval query
+dotnet run --project src/Tiro.Cli -- query deployment token rotation --db ./mydata/tiro.sqlite3
+
+# Check database stats
+dotnet run --project src/Tiro.Cli -- stats --db ./mydata/tiro.sqlite3
 ```
 
-Planner mode defaults to `auto`. Use `--planner off` for deterministic-only queries, `--planner auto` to use Gemini when configured and fall back otherwise, or `--planner on` to attempt planner use and still fall back on missing keys or failures. `--debug-planner` adds bounded planner diagnostics such as query lengths, refined-term counts, redacted Gemini endpoint URL, model, auth method, timeout, HTTP status, response body when returned, and pre-response inner exception details. It does not print prompt text or secret values.
+Set `TIRO_DB_PATH` to avoid passing `--db` on every call:
 
-Query supports explicit deterministic filters:
+```bash
+export TIRO_DB_PATH=/path/to/tiro.sqlite3
+dotnet run --project src/Tiro.Cli -- query deployment token rotation
+```
 
-- `--source-id <id>`
-- `--document-id <id>`
-- `--context-window <0..2>`
-- `--session-id <id>` to include session/state evidence in packets
+The published binary eliminates the `dotnet run` overhead:
 
-Internally, CLI query uses `TiroQueryService.QueryAsync(TiroQueryRequest)` rather than owning retrieval semantics itself. Future wrappers should call that same service surface so there is one query pipeline for planner setup, filters, context windows, session evidence, operational memory, lifecycle facts, retrieval policy, and packet assembly.
+```bash
+dotnet publish src/Tiro.Cli -c Release -o ./publish
+./publish/Tiro.Cli query deployment token rotation
+```
 
-Filters are never silently broadened. If a filter matches no chunks, the packet says so clearly. Adjacent context is bounded to two chunks on either side and is reported separately from ranked primary evidence.
+---
 
-Session commands:
+## CLI Reference
 
-- `session-create <session_id>`
-- `session-ingest <session_id> <direction> <source_identity> <text>`
-- `session-recent <session_id>`
-- `session-query <session_id> <query>`
+All commands emit structured JSON to stdout. Exit code is `0` on success, `1` on error.
 
-Operational memory commands:
+### Database
 
-- `decision-add <origin> <text>` / `decision-list`
-- `todo-add <origin> <text>` / `todo-list`
-- `unknown-add <origin> <text>` / `unknown-list`
-- `warning-add <origin> <text>` / `warning-list`
+| Command | Description |
+|---------|-------------|
+| `init` | Initialise a new SQLite database with the Tiro schema |
+| `stats` | Summary counts for all lanes |
+| `inspect [mode]` | Detailed state inspection (`sessions`, `operational`, `sources`, `documents`, `recent`, `stats`, `proxies`) |
 
-Add `--session-id <id>` to scope operational records to a session.
+### Corpus ingestion
 
-`query` returns a structured JSON context packet containing `query`, `normalized_terms`, `confidence`, `facts`, `unknowns`, `warnings`, `sources`, `source_ids`, `filters`, `context_window`, `primary_evidence`, `supporting_context`, `session_id`, `session_evidence`, `recent_session_context`, `operational_memory`, `retrieval_policy`, `retrieval_results`, and planner status metadata.
+| Command | Description |
+|---------|-------------|
+| `ingest-chunks <file.jsonl>` | Bulk-ingest corpus chunks from a JSONL file |
+| `ingest-session-note` | Add a freeform note to a session |
+| `ingest-operational-record` | Add a structured operational record |
+| `ingest-aichat-session` | Ingest an aichat session YAML as session messages |
+| `inspect-aichat-sessions` | List and inspect available aichat session files |
 
-## Retrieval Behavior
+### Retrieval
 
-Retrieval still uses deterministic normalized lexical matching as the chassis. Query text is tokenized, lowercased, de-duplicated, lightly suffix-normalized, and stripped of simple stopwords. Scoring uses token hits rather than raw substring counts, with small deterministic bonuses for term coverage, exact ordered phrase matches, and concentrated evidence in shorter chunks.
+| Command | Description |
+|---------|-------------|
+| `query <terms...>` | Main retrieval — returns a full context packet |
+| `recall <terms...>` | Natural-language recall across all lanes |
+| `search-debug <terms...>` | Retrieval with full scoring diagnostics |
+| `phrase-search <phrase>` | Exact phrase search |
+| `session-search <session_id> <terms...>` | Lexical search within a specific session |
+| `semantic-query <terms...>` | Pure vector semantic search |
+| `hybrid-search <terms...>` | Merged lexical + semantic search |
 
-Each primary evidence result includes provenance fields plus `rank`, `matched_terms`, per-term `score_details`, `score_summary`, and a compact explanation. Supporting context preserves exact source/document/chunk identity and records which primary chunk it supports.
+Retrieval flags (apply to `query`, `recall`, `search-debug`):
 
-M009 adds an explicit retrieval policy layer. Packets include `retrieval_policy.query_mode`, a mode reason, and per-evidence signals that keep these axes separate:
+```
+--limit <n>             Maximum results (default 20)
+--context-window <0..2> Adjacent chunk context to include (default 0)
+--session-id <id>       Include session evidence in the packet
+--source-id <id>        Filter to a specific source
+--document-id <id>      Filter to a specific document
+--planner off|auto|on   Query planning mode (default: auto)
+--debug-planner         Include planner diagnostics in output
+--lanes <lanes>         Comma-separated lane list (corpus,session,facts,operational)
+```
 
-- `relevance_score`: lexical match strength from deterministic search.
-- `recency_score`: deterministic age bucket relative to the newest candidate in the packet.
-- `importance_score`: explicit lane/type weighting, such as decisions and warnings carrying more operational importance than generic archive chunks.
-- `lifecycle_score`: active facts score positively; stale, superseded, conflicting, and expired fact evidence is penalized and warned about.
-- `mode_score`: deterministic query-mode emphasis.
+### Session memory
 
-Query modes are detected from normalized query terms:
+| Command | Description |
+|---------|-------------|
+| `session-create <session_id>` | Create a new session |
+| `session-ingest <session_id> <direction> <source_identity> <text>` | Append a message to a session |
+| `session-recent <session_id>` | Retrieve most recent messages |
+| `session-query <session_id> <terms...>` | Lexical search within a session |
+| `session-summary <session_id>` | Summarised view of a session |
 
-- `current-state`: terms such as current, now, latest, today, active, status, or state. This favors recent session/state evidence and active lifecycle facts.
-- `decision`: decision/intent terms. This favors operational decisions.
-- `unresolved`: TODO, blocked, warning, unknown, open, or unresolved terms. This favors operational TODOs, warnings, and unknowns.
-- `archive`: archive/reference/source/document/provenance lookup terms. This favors corpus evidence.
-- `fact-lifecycle`: conflict, stale, superseded, or lifecycle terms. This favors lifecycle facts while preserving lifecycle warnings.
-- `general`: no mode-specific terms matched.
+### Operational memory
 
-The final policy score is inspectable as `final=relevance+recency+importance+lifecycle+mode` in each signal explanation. The planner may read these deterministic signals, but it does not invent freshness, status, importance, or memory mutations.
+Records in this lane carry structured type (`decision`, `todo`, `unknown`, `warning`) and appear in query packets under `operational_memory`. Add `--session-id` to scope them to a session.
 
-Known limits:
+| Command | Description |
+|---------|-------------|
+| `decision-add <origin> <text>` | Record a decision |
+| `todo-add <origin> <text>` | Record a pending task |
+| `unknown-add <origin> <text>` | Record an open unknown |
+| `warning-add <origin> <text>` | Record a warning |
+| `decision-list` / `todo-list` / `unknown-list` / `warning-list` | List records by type |
 
-- Retrieval is still lexical, not semantic.
-- Confidence labels are evidence-based and conservative; planner presence never raises confidence.
-- Freshness is deterministic metadata/rule based. Tiro does not mark records stale from conversation tone.
-- Source IDs are deterministic local IDs, not content hashes.
-- The current engine scans chunks in process, which is acceptable for milestone fixtures but not a large-corpus indexing strategy.
+### Fact lifecycle
 
-## Session / State Memory
+Facts carry explicit status. Retrieval scores them accordingly — active facts score positively; stale, superseded, conflicting, and expired facts are penalised and surfaced with warnings.
 
-M006 stores sessions independently from corpus documents and chunks. Messages belong to explicit sessions and preserve:
+| Command | Description |
+|---------|-------------|
+| `fact-add <text>` | Add a new active fact |
+| `fact-list` | List all facts with status |
+| `fact-update-status <fact_id> <status>` | Update fact status |
+| `fact-supersede <old_fact_id> <new_text>` | Replace a fact and mark the old one superseded |
+| `fact-conflict <fact_id_a> <fact_id_b>` | Mark two facts as conflicting |
 
-- `session_id`
-- `message_id`
-- `timestamp_utc`
-- `direction`
-- `source_identity`
-- `text`
+### Proxy layer
 
-Session query is deterministic lexical retrieval over stored message text and message metadata. Recent session retrieval is bounded and chronological. Packets that use `--session-id` include `session_evidence` and `recent_session_context` separately from corpus `primary_evidence`, so current-state context does not blur into archive/document evidence.
+The proxy layer builds lightweight index structures over corpus evidence for faster structured recall.
 
-Session/state memory is explicit only. Tiro does not infer durable state from vibe, mutate memory from planner output, or build a stale/superseded fact graph in M006.
+| Command | Description |
+|---------|-------------|
+| `proxy-build` | Build corpus proxy index |
+| `proxy-inspect` | Inspect proxy index state |
+| `proxy-recall <terms...>` | Recall via proxy layer |
+| `proxy-hydrate <proxy_id>` | Hydrate a proxy pointer to its target evidence |
+| `proof-carry-forward` | Validate carry-forward integrity |
 
-## Operational Memory
+### Semantic search
 
-M007 stores structured operational memory independently from corpus chunks and session transcript messages. Supported record types:
+| Command | Description |
+|---------|-------------|
+| `semantic-status` | Show current embedding configuration |
+| `semantic-index` | Index all un-embedded corpus chunks |
 
-- `decision`
-- `todo`
-- `unknown`
-- `warning`
+---
 
-Each record stores a record ID, creation timestamp, text, origin, status, optional session ID, and optional link fields for source/message IDs. Retrieval over operational memory is deterministic lexical matching. Query packets include matching records under `operational_memory`; operational decisions may also appear as `facts`, operational unknowns are surfaced in `unknowns`, and operational warnings are surfaced in `warnings`.
+## Configuration
 
-Operational memory is explicit only. Tiro does not infer decisions or TODOs from planner output or arbitrary transcripts in M007.
+All configuration is via environment variables. No config files are required.
 
-## Gemini Planner
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TIRO_DB_PATH` | Path to the SQLite database | `data/tiro.sqlite3` |
+| `TIRO_SEMANTIC_ENABLED` | Enable semantic search | `false` |
+| `TIRO_EMBEDDING_PROVIDER` | `local` (Ollama) or `openai` | `none` |
+| `TIRO_EMBEDDING_MODEL` | Embedding model name | `text-embedding-3-small` |
+| `TIRO_EMBEDDING_BASE_URL` | Base URL for embedding API | `https://api.openai.com/v1` |
+| `OPENAI_API_KEY` | OpenAI API key (if provider is `openai`) | — |
+| `GEMINI_API_KEY` | Gemini API key for query planning | — |
+| `GEMINI_PLANNER_MODEL` | Gemini model for planning | `gemini-2.5-flash` |
+| `AICHAT_SESSIONS_DIR` | Override aichat sessions directory | `~/.config/aichat/sessions` |
+| `AICHAT_CONFIG_DIR` | Override aichat config directory | `~/.config/aichat` |
 
-The M004A planner is direct Gemini API integration inside Tiro. It is retrieval-specific and short-lived: it asks for one compact JSON object containing a refined lexical `search_query`, `refined_terms`, and `packet_focus`, with optional `warnings`. Tiro treats that output as advisory. Gemini never becomes the fact source, never mutates memory, and never produces final answer facts.
+### Local embeddings (Ollama)
 
-Planner requests use `responseMimeType: application/json` plus a narrow `responseJsonSchema` for those fields. The planner output budget is 384 tokens: large enough for the small JSON payload, small enough to discourage rambling.
+```bash
+export TIRO_SEMANTIC_ENABLED=true
+export TIRO_EMBEDDING_PROVIDER=local
+export TIRO_EMBEDDING_MODEL=mxbai-embed-large
+export TIRO_EMBEDDING_BASE_URL=http://localhost:11434/v1
 
-Planner parsing is strict by default. It accepts:
+# Pull the model, then index your corpus
+ollama pull mxbai-embed-large
+./Tiro.Cli semantic-index
+```
 
-- a single JSON object
-- one JSON object wrapped in a single markdown code fence
-- one JSON object after a single obvious preamble line
+---
 
-Truncated JSON, arbitrary prose, extra leading/trailing text, or missing required fields trigger deterministic fallback.
+## Retrieval Behaviour
 
-Secret loading uses `GEMINI_API_KEY` with this precedence:
+### Lexical scoring
 
-- process environment
-- `~/.env/Tiro_v1.env`
+Query text is tokenised, lowercased, deduplicated, lightly suffix-normalised, and stripped of stopwords. Scoring uses token hit counts with small deterministic bonuses for term coverage, exact ordered phrase matches, and evidence concentration in shorter chunks.
 
-Planner model selection uses `GEMINI_PLANNER_MODEL` with the same precedence. This value is not secret. If unset, Tiro defaults to `gemini-2.5-flash`, which is the current Gemini API quickstart model shown by Google AI docs for `generateContent`.
+Each result includes `rank`, `matched_terms`, per-term `score_details`, a `score_summary`, and a compact explanation string.
 
-The env file is optional. If the key or file is missing, or if the API call times out/fails/returns invalid JSON, Tiro falls back to deterministic retrieval and records a concise warning in the packet. Secret values are never logged; the CLI only reports whether `GEMINI_API_KEY` was found.
+### Retrieval policy
 
-## Storage Summary
+Query intent is detected from normalised terms and selects a retrieval mode:
 
-The M002 schema is initialized idempotently and contains:
+| Mode | Detected from | Emphasis |
+|------|--------------|----------|
+| `current-state` | current, now, latest, active, status | Recent session evidence, active facts |
+| `decision` | decide, decided, chose, intent | Operational decisions |
+| `unresolved` | todo, blocked, unknown, open | TODOs, warnings, unknowns |
+| `archive` | source, document, provenance, reference | Corpus evidence |
+| `fact-lifecycle` | conflict, stale, superseded, lifecycle | Lifecycle facts with status warnings |
+| `general` | (no mode terms matched) | Balanced across all lanes |
 
-- `schema_info`
-- `sources`
-- `documents`
-- `chunks`
-- `sessions`
-- `messages`
-- `operational_records`
+Each evidence item in the packet carries five composable scores:
 
-Source registration happens during chunk ingestion. Chunks preserve `document_id`, `source_name`, `source_path`, `timeframe_or_era`, `chunk_id`, `chunk_index`, `chunk_count`, text, local `source_id`, and local ingestion timestamp.
+- `relevance_score` — lexical match strength
+- `recency_score` — deterministic age bucket relative to newest candidate
+- `importance_score` — lane/type weighting (decisions and warnings rank higher than archive chunks)
+- `lifecycle_score` — active facts score positively; degraded status penalises
+- `mode_score` — mode-specific emphasis
 
-## Scope Notes
+Final score is reported as `final=relevance+recency+importance+lifecycle+mode`.
 
-Retrieval is deterministic lexical matching with optional bounded query planning and deterministic M009 weighting. It is intentionally not semantic retrieval, not autonomous agentic planning, not web search, not embeddings, not external reranking, and not planner-driven memory mutation.
+### Query planning (optional)
+
+When a Gemini API key is present and `--planner auto` or `--planner on` is set, Tiro makes a single bounded Gemini call requesting a small JSON payload with a refined `search_query`, `refined_terms`, and `packet_focus`. The output is advisory: Tiro runs the refined lexical query deterministically and falls back silently if the planner fails, times out, or returns invalid JSON. Planner presence never raises retrieval confidence.
+
+---
+
+## Output Format
+
+Every `query` call returns a structured JSON packet:
+
+```json
+{
+  "query": "deployment token rotation",
+  "normalized_terms": ["deployment", "token", "rotation"],
+  "confidence": "medium",
+  "retrieval_policy": { "query_mode": "current-state", "mode_reason": "..." },
+  "primary_evidence": [ ... ],
+  "supporting_context": [ ... ],
+  "session_evidence": [ ... ],
+  "recent_session_context": [ ... ],
+  "operational_memory": { "decisions": [...], "todos": [...], "unknowns": [...], "warnings": [...] },
+  "facts": [ ... ],
+  "unknowns": [ ... ],
+  "warnings": [ ... ],
+  "sources": [ ... ],
+  "planner_status": "used|skipped|fallback|disabled"
+}
+```
+
+Filters are never silently broadened. If a `--source-id` or `--document-id` filter matches nothing, the packet reports that explicitly rather than returning unfiltered results.
+
+---
+
+## Schema
+
+The SQLite schema is initialised idempotently by `init` and contains:
+
+- `schema_info` — schema version metadata
+- `sources` — registered corpus sources
+- `documents` — document registry
+- `chunks` — corpus text chunks with provenance
+- `sessions` — session registry
+- `messages` — session messages with direction and source identity
+- `operational_records` — decisions, todos, unknowns, warnings
+- `facts` — lifecycle-aware facts with status tracking
+- `embeddings` — optional vector embeddings per chunk
+
+---
+
+## Testing
+
+```bash
+dotnet test tests/Tiro.Cli.Tests
+```
+
+The test suite uses temporary in-process SQLite databases and covers retrieval scoring, fact lifecycle, session memory, operational records, planner fallback paths, semantic expansion, and aichat session ingestion.
+
+---
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE) for details.
+
+Commercial use requires a separate license. Contact the author for terms.
