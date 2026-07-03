@@ -90,9 +90,12 @@ public static partial class AichatSessionDiscovery
         }
 
         var configDir = Environment.GetEnvironmentVariable("AICHAT_CONFIG_DIR");
+        var defaultConfigDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".config", "aichat");
         return Path.Combine(
             string.IsNullOrWhiteSpace(configDir)
-                ? "/home/SiliconMagician/.config/aichat"
+                ? defaultConfigDir
                 : Path.GetFullPath(configDir),
             "sessions");
     }

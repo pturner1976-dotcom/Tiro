@@ -1,0 +1,38 @@
+# Build outputs
+bin/
+obj/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code
+.vscode/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Rider
+*.DotSettings.user
+
+# NuGet
+*.nupkg
+*.snupkg
+project.lock.json
+packages/
+
+# Test results
+TestResults/
+coverage/
+*.trx
+*.coveragexml
+
+# Runtime data — never commit
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
