@@ -19,7 +19,7 @@ public sealed record PlannerConfig(
         var envFilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".env",
-            "Tiro_v1.env");
+            "tiro.env");
 
         var processValue = Environment.GetEnvironmentVariable(keyName);
         var processModel = Environment.GetEnvironmentVariable(modelName);

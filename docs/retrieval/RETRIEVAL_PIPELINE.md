@@ -75,7 +75,32 @@ When active, the planner can:
 - Suggest target lanes (corpus, session, operational, facts)
 - Expand a vague query into multiple concrete sub-queries
 
-Planner configuration loads an API key from the process environment first, then from a local environment file.
+### Current implementation: Gemini
+
+The built-in planner client calls the Gemini API. Configure it with:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GEMINI_API_KEY` | Gemini API key | — (planner disabled if absent) |
+| `GEMINI_PLANNER_MODEL` | Gemini model to use | `gemini-2.5-flash` |
+
+The key is loaded from the process environment first, then from `~/.env/tiro.env` as a fallback.
+
+### Custom planner implementations
+
+The planner is abstracted behind `IRetrievalPlannerClient` in `GeminiPlannerClient.cs`:
+
+```csharp
+public interface IRetrievalPlannerClient
+{
+    Task<PlannerClientResult> PlanAsync(
+        string query,
+        IReadOnlyList<string> deterministicTerms,
+        CancellationToken cancellationToken);
+}
+```
+
+Any LLM or local model can be wired in by implementing this interface and supplying it to `TiroQueryService`. The planner contract requires returning a `PlannerClientResult` with refined terms and optional lane hints — the retrieval pipeline handles the rest deterministically.
 
 **Fallback behavior is unconditional.** If the planner fails for any reason — network error, missing key, timeout, or malformed response — retrieval continues with the original query using deterministic lexical scoring. The planner is advisory; its absence never blocks retrieval.
 
