@@ -1,6 +1,11 @@
 # Retrieval Pipeline
 
-Tiro uses a deterministic lexical retrieval stack. There are no embeddings and no vector indexes. All retrieval is based on token matching, scoring heuristics, and an optional advisory planner that can refine terms but whose failures always fall back to deterministic behavior.
+Tiro's retrieval stack has two layers:
+
+- **Lexical retrieval** — deterministic token matching and scoring. Always available, no external dependencies required.
+- **Semantic retrieval** — vector embedding search via a local Ollama model or the OpenAI embeddings API. Optional; enabled through environment variables.
+
+The `query` and `recall` commands use lexical retrieval plus an optional advisory planner. `semantic-query` runs pure vector search. `hybrid-search` merges both layers by configurable weight. All retrieval modes fall back gracefully: if semantic search is unavailable, lexical retrieval continues without interruption.
 
 ---
 
@@ -154,6 +159,68 @@ If no active proxies exist, the service logs `No recall proxies available; fallb
 
 ---
 
+## Semantic Search
+
+Semantic search embeds query text and corpus chunks into a shared vector space and retrieves by cosine similarity rather than token overlap. It is useful for concept-heavy or paraphrase-heavy queries where lexical overlap with stored text is low.
+
+### Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TIRO_SEMANTIC_ENABLED` | Must be `true` to activate semantic search | `false` |
+| `TIRO_EMBEDDING_PROVIDER` | `local` (Ollama) or `openai` | `none` |
+| `TIRO_EMBEDDING_MODEL` | Model name to use for embeddings | `text-embedding-3-small` |
+| `TIRO_EMBEDDING_BASE_URL` | Base URL for the embedding API | `https://api.openai.com/v1` |
+
+For local embeddings via Ollama, set `TIRO_EMBEDDING_PROVIDER=local` and `TIRO_EMBEDDING_BASE_URL=http://localhost:11434/v1`. No API key is required. The OpenAI-compatible embedding endpoint (`/embeddings`) is used regardless of provider.
+
+### `semantic-index`
+
+Embeds all un-indexed corpus chunks and stores the vectors in the database. Must be run before semantic search will return results.
+
+```
+tiro semantic-index [--lanes corpus] [--limit <n>] [--rebuild] [--dry-run]
+```
+
+`--rebuild` re-embeds chunks that already have vectors. `--dry-run` reports candidates without calling the embedding API.
+
+### `semantic-query`
+
+Pure vector search — embeds the query and retrieves the closest chunks by cosine similarity.
+
+```
+tiro semantic-query <query> [--limit <n>] [--min-score <f>] [--lanes corpus,session]
+```
+
+`--min-score` filters results below a similarity threshold (default `0.35`). Returns a structured JSON response with scored results and embedding metadata.
+
+### `hybrid-search`
+
+Merges lexical and semantic scores into a single ranked result set.
+
+```
+tiro hybrid-search <query> [--limit <n>] [--lanes corpus,session] \
+  [--lexical-weight <f>] [--semantic-weight <f>] [--min-semantic-score <f>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lexical-weight` | `0.55` | Weight applied to the lexical score component |
+| `--semantic-weight` | `0.45` | Weight applied to the semantic score component |
+| `--min-semantic-score` | `0.35` | Minimum cosine similarity for a semantic result to contribute |
+
+If semantic search is unavailable (not enabled or no key), `hybrid-search` falls back to lexical-only scoring and notes the fallback in the response.
+
+### `semantic-status`
+
+Reports the current embedding configuration without making any API calls.
+
+```
+tiro semantic-status
+```
+
+---
+
 ## Fallback Behavior
 
 | Condition | Fallback |
@@ -173,4 +240,4 @@ Tiro never invents evidence to fill a gap. Absent evidence produces structured a
 - **`query` used where `recall` is appropriate** — `query` requires the caller to know source identifiers. If IDs are unknown, use `recall` instead.
 - **Stale facts surface** — if a stale or superseded fact is the only lexical match, it will appear with a lifecycle penalty and warning. The caller must inspect the lifecycle status field.
 - **Empty session results** — session evidence is only included in `query` when `--session-id` is supplied. Use `session-search` or `recall` for session discovery without a known ID.
-- **Synonym-heavy queries miss** — no embeddings means concept-heavy or synonym-heavy queries require good lexical overlap with stored text. Rephrase using terms that appear in the stored records, or use planner expansion.
+- **Synonym-heavy queries miss** — `query` and `recall` use lexical scoring, which requires token overlap with stored text. For concept-heavy or synonym-heavy queries, use `semantic-query` or `hybrid-search` if embeddings are configured, or use planner expansion to broaden lexical terms.

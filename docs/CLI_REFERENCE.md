@@ -114,7 +114,7 @@ Targeted evidence retrieval returning a `ContextPacket`. This is the primary rea
 **Common mistakes:**
 - Using a lane name as `--source-id` — the value must be a numeric source ID from `inspect sources`.
 - Expecting session recall without supplying `--session-id`.
-- Expecting semantic or embedding-based retrieval — retrieval is lexical in the current implementation.
+- Using `query` for concept-heavy or synonym-heavy prompts — `query` uses lexical scoring. Use `hybrid-search` or `semantic-query` when embeddings are configured.
 
 ---
 
@@ -422,8 +422,78 @@ not be used in production operator flows.
 
 ---
 
+## Semantic Search
+
+Semantic search requires embeddings to be indexed first. All four commands are gated on `TIRO_SEMANTIC_ENABLED=true` in the environment.
+
+### `semantic-index`
+
+```
+tiro [--db <path>] semantic-index [--lanes corpus] [--limit <n>] [--rebuild] [--dry-run]
+```
+
+Embed un-indexed corpus chunks and store their vectors in the database. Must be run before `semantic-query` or `hybrid-search` will return results.
+
+| Flag | Description |
+|---|---|
+| `--rebuild` | Re-embed chunks that already have vectors |
+| `--dry-run` | Report candidates without calling the embedding API |
+| `--limit <n>` | Cap the number of chunks indexed in a single run |
+
+---
+
+### `semantic-query`
+
+```
+tiro [--db <path>] [--limit <n>] semantic-query <query> \
+     [--min-score <f>] [--lanes corpus,session]
+```
+
+Pure vector search. Embeds the query and retrieves corpus chunks by cosine similarity. Returns a JSON result set with scores and embedding metadata.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--min-score <f>` | `0.35` | Minimum cosine similarity threshold |
+| `--lanes` | `corpus,session` | Lanes to search |
+
+---
+
+### `hybrid-search`
+
+```
+tiro [--db <path>] [--limit <n>] hybrid-search <query> \
+     [--lanes corpus,session] \
+     [--lexical-weight <f>] [--semantic-weight <f>] [--min-semantic-score <f>]
+```
+
+Merge lexical and semantic scores into a single ranked result set. Falls back to lexical-only if semantic search is unavailable, and notes the fallback in the response.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lexical-weight <f>` | `0.55` | Weight applied to the lexical score component |
+| `--semantic-weight <f>` | `0.45` | Weight applied to the semantic score component |
+| `--min-semantic-score <f>` | `0.35` | Minimum cosine similarity for a semantic result to contribute |
+
+---
+
+### `semantic-status`
+
+```
+tiro [--db <path>] semantic-status
+```
+
+Report the current embedding configuration and indexed chunk counts. Does not call the embedding API.
+
+---
+
 ## Environment Variables
 
 | Variable | Description |
 |---|---|
 | `TIRO_DB_PATH` | Path to the SQLite database. Tool wrappers require this to be set and will not fall back to a default. |
+| `TIRO_SEMANTIC_ENABLED` | Set to `true` to activate semantic search commands. |
+| `TIRO_EMBEDDING_PROVIDER` | `local` (Ollama/OpenAI-compatible) or `openai` |
+| `TIRO_EMBEDDING_MODEL` | Embedding model name (e.g. `nomic-embed-text`, `text-embedding-3-small`) |
+| `TIRO_EMBEDDING_BASE_URL` | Base URL for the embedding API. Default: `https://api.openai.com/v1`. For Ollama: `http://localhost:11434/v1` |
+| `GEMINI_API_KEY` | Enables the Gemini retrieval planner. Planner is disabled if absent. |
+| `GEMINI_PLANNER_MODEL` | Gemini model to use for planning (default: `gemini-2.5-flash`) |
