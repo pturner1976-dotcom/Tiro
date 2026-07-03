@@ -293,6 +293,17 @@ The test suite uses temporary in-process SQLite databases and covers retrieval s
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE) for details.
+Tiro is licensed under the GNU Affero General Public License v3.0 only
+(`AGPL-3.0-only`). See [LICENSE](LICENSE) for the full license text.
 
-Commercial use requires a separate license. Contact the author for terms.
+Copyright (C) 2026 Patrick Turner.
+
+You may use, study, modify, and redistribute Tiro under the terms of the AGPL.
+If you modify Tiro and make the modified version available for use over a network,
+you must provide users interacting with that modified version an opportunity to
+receive the corresponding source code, as required by AGPL section 13.
+
+**Commercial licensing** — organizations that want to use, embed, modify,
+distribute, host, or offer Tiro-based products or services without AGPL
+source-sharing obligations may obtain a separate commercial license. See
+[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) or contact pturner1976@gmail.com.
