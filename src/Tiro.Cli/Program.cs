@@ -351,8 +351,7 @@ try
         IEmbeddingClient? indexClient = null;
         if (!dryRun)
         {
-            var apiKey = embeddingConfig.GetApiKey();
-            if (string.IsNullOrWhiteSpace(apiKey))
+            if (!embeddingConfig.IsReady)
             {
                 Console.WriteLine(JsonSerializer.Serialize(
                     new SemanticIndexResponse(
@@ -363,7 +362,7 @@ try
                 return;
             }
 
-            indexClient = new OpenAiEmbeddingClient(SharedHttpClient, apiKey, embeddingConfig.Model);
+            indexClient = new OpenAiEmbeddingClient(SharedHttpClient, embeddingConfig.GetApiKey(), embeddingConfig.Model, embeddingConfig.BaseUrl);
         }
 
         var indexResponse = await new SemanticIndexService().IndexAsync(
@@ -380,10 +379,9 @@ try
         var lanes = ParseLanes(GetValue(commandOptions, "lanes"));
         var minScore = GetDouble(commandOptions, "min-score") ?? semanticConfig.MinScore;
         IEmbeddingClient? queryClient = null;
-        var apiKey = semanticConfig.GetApiKey();
-        if (semanticConfig.Enabled && !string.IsNullOrWhiteSpace(apiKey))
+        if (semanticConfig.Enabled && semanticConfig.IsReady)
         {
-            queryClient = new OpenAiEmbeddingClient(SharedHttpClient, apiKey, semanticConfig.Model);
+            queryClient = new OpenAiEmbeddingClient(SharedHttpClient, semanticConfig.GetApiKey(), semanticConfig.Model, semanticConfig.BaseUrl);
         }
 
         var semanticResponse = await new SemanticSearchService().SearchAsync(
@@ -402,10 +400,9 @@ try
         var semanticWeight = GetDouble(commandOptions, "semantic-weight") ?? 0.45;
         var minSemanticScore = GetDouble(commandOptions, "min-semantic-score") ?? hybridConfig.MinScore;
         IEmbeddingClient? hybridClient = null;
-        var hybridApiKey = hybridConfig.GetApiKey();
-        if (hybridConfig.Enabled && !string.IsNullOrWhiteSpace(hybridApiKey))
+        if (hybridConfig.Enabled && hybridConfig.IsReady)
         {
-            hybridClient = new OpenAiEmbeddingClient(SharedHttpClient, hybridApiKey, hybridConfig.Model);
+            hybridClient = new OpenAiEmbeddingClient(SharedHttpClient, hybridConfig.GetApiKey(), hybridConfig.Model, hybridConfig.BaseUrl);
         }
 
         var hybridResponse = await new HybridSearchService().SearchAsync(

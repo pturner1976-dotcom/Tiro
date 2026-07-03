@@ -34,26 +34,22 @@ public sealed class EmbeddingClientException : Exception
 /// </summary>
 public sealed class OpenAiEmbeddingClient : IEmbeddingClient
 {
-    private const string Endpoint = "https://api.openai.com/v1/embeddings";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     private readonly HttpClient _httpClient;
-    private readonly string _apiKey;
+    private readonly string? _apiKey;
     private readonly string _model;
+    private readonly string _endpoint;
 
-    public OpenAiEmbeddingClient(HttpClient httpClient, string apiKey, string model)
+    public OpenAiEmbeddingClient(HttpClient httpClient, string? apiKey, string model, string baseUrl)
     {
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new InvalidOperationException("OpenAI embedding API key is not configured.");
-        }
-
         _httpClient = httpClient;
         _apiKey = apiKey;
         _model = model;
+        _endpoint = baseUrl.TrimEnd('/') + "/embeddings";
     }
 
     public async Task<EmbeddingResult> EmbedAsync(string text, CancellationToken cancellationToken)
@@ -63,8 +59,11 @@ public sealed class OpenAiEmbeddingClient : IEmbeddingClient
             throw new ArgumentException("Text to embed must not be empty.", nameof(text));
         }
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint);
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+        using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint);
+        if (!string.IsNullOrWhiteSpace(_apiKey))
+        {
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+        }
         request.Content = JsonContent.Create(new OpenAiEmbeddingRequest(_model, text), options: JsonOptions);
 
         HttpResponseMessage response;

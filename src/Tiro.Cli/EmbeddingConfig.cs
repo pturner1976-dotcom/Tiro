@@ -14,12 +14,17 @@ public sealed record EmbeddingConfig(
     string Model,
     string KeyName,
     bool KeyFound,
+    string BaseUrl,
     double MinScore,
     int MaxResults,
     int IndexBatchSize)
 {
     public const string DefaultProvider = "none";
     public const string DefaultModel = "text-embedding-3-small";
+    private const string DefaultBaseUrl = "https://api.openai.com/v1";
+
+    // True when the provider can be used — key found for openai, always true for local.
+    public bool IsReady => Provider == "local" || KeyFound;
 
     public static EmbeddingConfig Load()
     {
@@ -33,6 +38,9 @@ public sealed record EmbeddingConfig(
             : Environment.GetEnvironmentVariable("TIRO_EMBEDDING_MODEL")!.Trim();
         var keyName = provider == "openai" ? "OPENAI_API_KEY" : "NONE";
         var keyFound = provider == "openai" && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(keyName));
+        var baseUrl = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TIRO_EMBEDDING_BASE_URL"))
+            ? DefaultBaseUrl
+            : Environment.GetEnvironmentVariable("TIRO_EMBEDDING_BASE_URL")!.Trim();
         // 0.35 is calibrated empirically (see docs/WP4C_NATIVE_SEMANTIC_ENGINE_REPORT.md),
         // not the contract's originally-specified 0.70. With OpenAI
         // text-embedding-3-small on short evidence-style text, real
@@ -44,7 +52,7 @@ public sealed record EmbeddingConfig(
         var maxResults = ParseInt(Environment.GetEnvironmentVariable("TIRO_SEMANTIC_MAX_RESULTS"), 20);
         var batchSize = ParseInt(Environment.GetEnvironmentVariable("TIRO_SEMANTIC_INDEX_BATCH_SIZE"), 64);
 
-        return new EmbeddingConfig(enabled, provider, model, keyName, keyFound, minScore, maxResults, batchSize);
+        return new EmbeddingConfig(enabled, provider, model, keyName, keyFound, baseUrl, minScore, maxResults, batchSize);
     }
 
     public string? GetApiKey()
@@ -55,7 +63,7 @@ public sealed record EmbeddingConfig(
     private static string NormalizeProvider(string? value)
     {
         var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized is "openai" or "none" ? normalized : DefaultProvider;
+        return normalized is "openai" or "local" or "none" ? normalized : DefaultProvider;
     }
 
     private static double ParseDouble(string? value, double fallback) =>
