@@ -150,7 +150,7 @@ If step 4 returns nothing while step 3 succeeded, the database path is likely in
 
 ### Saved session retention
 
-Use `tests/fixtures/session_test.yaml` or a session file of your own:
+Use a synthetic session file of your own:
 
 ```bash
 dotnet run --project src/Tiro.Cli/Tiro.Cli.csproj -- \
@@ -158,7 +158,7 @@ dotnet run --project src/Tiro.Cli/Tiro.Cli.csproj -- \
   --session-id <derived-session-id> \
   ingest-aichat-session \
   --source-identity aichat:<role-name> \
-  --file tests/fixtures/session_test.yaml
+  --file /path/to/saved-session.yaml
 ```
 
 After import, query with the same `session_id` and confirm:

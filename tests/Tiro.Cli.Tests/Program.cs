@@ -1028,7 +1028,8 @@ Run("saved AIChat session imports as session evidence", async () =>
     using var store = EmptyStore("m012_aichat_session");
     var beforeStats = store.GetStats();
     var beforeFacts = store.ListFacts(null, 100).Count;
-    var fixture = Path.Combine(Directory.GetCurrentDirectory(), "tests", "fixtures", "session_test.yaml");
+    var fixtureDir = CreateSessionFixtureDir("m012_saved_session");
+    var fixture = WriteSessionFixture(fixtureDir, "saved_session.yaml", "m012 session test marker", "2026-05-10T01:00:00Z");
     var response = new TiroIngestStateService().IngestAichatSession(new TiroAichatSessionIngestRequest(
         store.DatabasePath,
         "m012-session-test",
@@ -1051,7 +1052,7 @@ Run("saved AIChat session imports as session evidence", async () =>
     AssertEqual(beforeStats.DocumentCount, afterStats.DocumentCount);
     AssertEqual(beforeStats.SourceCount, afterStats.SourceCount);
 
-    var query = await QueryService(store.DatabasePath, "session_test", sessionId: "m012-session-test");
+    var query = await QueryService(store.DatabasePath, "m012 session test marker", sessionId: "m012-session-test");
     AssertEqual(true, query.Packet.SessionEvidence.Count > 0);
     AssertEqual(true, query.Packet.SessionEvidence.Any(item => item.SourceIdentity == "aichat:fixture_runtime"));
     AssertEqual(0, query.Packet.PrimaryEvidence.Count);
@@ -1901,7 +1902,7 @@ static string WriteSessionFixture(string dir, string fileName, string phrase, st
             Please remember this fixture phrase: {{phrase}}
         - role: assistant
           content: |-
-            Acknowledged at {{timestamp}}. Deterministic retrieval must remain explicit and inspectable.
+            Acknowledged at {{timestamp}}. This session fixture remains synthetic and deterministic.
         """);
     return path;
 }

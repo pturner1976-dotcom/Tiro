@@ -9,7 +9,6 @@ Files:
 - `corpus_chunks.jsonl`
   Purpose: minimal corpus evidence for `query`, `recall`, `inspect`, exact
   phrase search, proxy build, proxy recall, and no-result checks.
-- `session_fixture.yaml`
   Purpose: saved-session ingest path for session summary, session evidence, and
   exact phrase behavior in a non-corpus lane.
 
