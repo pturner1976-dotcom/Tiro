@@ -1,7 +1,7 @@
 # Tiro Parity Fixtures
 
 These fixtures are synthetic and deterministic. They are committed specifically
-for `v3 parity` parity testing and do not derive from the live Tiro v1
+for v3 parity testing and do not derive from the live Tiro v1
 database.
 
 Files:
