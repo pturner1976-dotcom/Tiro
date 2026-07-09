@@ -17,7 +17,8 @@ public sealed class RetrievalDiagnostics
             0,
             request.SessionId,
             request.PlannerMode,
-            request.DebugPlanner), cancellationToken).ConfigureAwait(false);
+            request.DebugPlanner,
+            request.IncludeArchived), cancellationToken).ConfigureAwait(false);
 
         var packet = queryResponse.Packet;
         using var store = TiroStore.Open(queryResponse.DatabasePath);
@@ -44,6 +45,9 @@ public sealed class RetrievalDiagnostics
             queryResponse.DatabasePath,
             packet.Query,
             packet.NormalizedTerms,
+            packet.RetrievalPolicy.QueryMode,
+            packet.RetrievalPolicy.ModeReason,
+            packet.RetrievalPolicy.CompetingModes,
             packet.Planner.Mode,
             packet.Planner.Status,
             packet.Planner.SemanticIntent,

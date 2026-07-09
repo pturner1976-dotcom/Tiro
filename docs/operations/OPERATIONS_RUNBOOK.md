@@ -127,6 +127,8 @@ dotnet run --project src/Tiro.Cli/Tiro.Cli.csproj -- --db "$TIRO_DB_PATH" --plan
   search-debug "your search question"
 ```
 
+Add `--include-archived` when auditing archived lifecycle or operational evidence; archived rows remain excluded by default.
+
 ---
 
 ## Build and Inspect Proxies
@@ -155,6 +157,52 @@ dotnet run --project src/Tiro.Cli/Tiro.Cli.csproj -- --db "$TIRO_DB_PATH" proxy-
 ```
 
 If `recall` warns `No recall proxies available; fallback lexical recall used`, run `proxy-build` for the relevant documents and retry.
+
+---
+
+## Compaction
+
+Use archival to reduce the default retrieval surface area for long-running stores without deleting any evidence.
+
+### Dry run first
+
+```bash
+dotnet run --project src/Tiro.Cli/Tiro.Cli.csproj -- --db "$TIRO_DB_PATH" archive \
+  --older-than-days 90 \
+  --dry-run
+```
+
+Recommended starting point: `90` days. This is only guidance, not a built-in default; the command requires an explicit age threshold every time.
+
+### Apply archival
+
+```bash
+dotnet run --project src/Tiro.Cli/Tiro.Cli.csproj -- --db "$TIRO_DB_PATH" archive \
+  --older-than-days 90
+```
+
+Default archival is conservative:
+
+- facts must already be `stale` or `superseded`
+- operational records must already be `closed`
+
+Use `--status active` or another explicit status only when you intentionally want to override those defaults.
+
+### Reverse archival
+
+```bash
+dotnet run --project src/Tiro.Cli/Tiro.Cli.csproj -- --db "$TIRO_DB_PATH" unarchive \
+  --evidence-key fact|123
+```
+
+Or clear all recent archive marks:
+
+```bash
+dotnet run --project src/Tiro.Cli/Tiro.Cli.csproj -- --db "$TIRO_DB_PATH" unarchive \
+  --all-since 2026-07-08T00:00:00Z
+```
+
+Archive and unarchive only flip `archived_utc`; they do not delete rows or rewrite lifecycle status.
 
 ---
 

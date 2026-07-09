@@ -13,7 +13,7 @@ status lines.
 ```
 tiro [--db <path>] [--limit <n>] [--source-id <id>] [--document-id <id>] \
      [--context-window 0..2] [--session-id <id>] [--planner on|off|auto] \
-     [--debug-planner] <command> [<args>...]
+     [--debug-planner] [--include-archived] <command> [<args>...]
 ```
 
 | Option | Default | Description |
@@ -26,6 +26,7 @@ tiro [--db <path>] [--limit <n>] [--source-id <id>] [--document-id <id>] \
 | `--session-id <id>` | unset | Scope session retrieval or writes to a specific session. |
 | `--planner on\|off\|auto` | `auto` | Enable or disable the query planner. `auto` uses the planner when it improves results. |
 | `--debug-planner` | off | Emit planner internals in output for debugging. |
+| `--include-archived` | off | Include archived operational records and lifecycle facts in `query`, `recall`, and `search-debug`. Returned archived evidence is explicitly marked. |
 
 ---
 
@@ -88,7 +89,7 @@ List documents, optionally filtered by source.
 ```
 tiro [--db <path>] [--limit <n>] [--source-id <id>] [--document-id <id>] \
      [--context-window 0..2] [--session-id <id>] [--planner on|off|auto] \
-     [--debug-planner] query <query-text>
+     [--debug-planner] [--include-archived] query <query-text>
 ```
 
 Targeted evidence retrieval returning a `ContextPacket`. This is the primary read path.
@@ -111,6 +112,8 @@ Targeted evidence retrieval returning a `ContextPacket`. This is the primary rea
 | `retrieval_policy` | Summary of the retrieval policy applied |
 | `planner` | Planner state (present when planner is active or `--debug-planner` is set) |
 
+`retrieval_policy` now includes `competing_modes` alongside the chosen `query_mode` and `mode_reason`, and each policy signal includes an `archived` boolean when archived evidence is explicitly included.
+
 **Common mistakes:**
 - Using a lane name as `--source-id` — the value must be a numeric source ID from `inspect sources`.
 - Expecting session recall without supplying `--session-id`.
@@ -122,7 +125,7 @@ Targeted evidence retrieval returning a `ContextPacket`. This is the primary rea
 
 ```
 tiro [--db <path>] [--limit <n>] [--source-id <id>] [--document-id <id>] \
-     [--session-id <id>] [--planner on|off|auto] [--debug-planner] \
+     [--session-id <id>] [--planner on|off|auto] [--debug-planner] [--include-archived] \
      search-debug <query-text>
 ```
 
@@ -136,7 +139,7 @@ or does not return expected content.
 
 ```
 tiro [--db <path>] [--limit <n>] [--planner on|off|auto] [--debug-planner] \
-     recall <query-text> [--session-limit <n>] [--source-limit <n>] [--document-limit <n>]
+     [--include-archived] recall <query-text> [--session-limit <n>] [--source-limit <n>] [--document-limit <n>]
 ```
 
 Broad natural recall across corpus, sessions, operational memory, and facts. Does not
@@ -159,6 +162,37 @@ require knowing source IDs or session IDs in advance.
 | `proxy_hydrated_evidence` | Authoritative evidence hydrated from matched proxies |
 
 Falls back cleanly when proxies have not been built.
+
+Archived lifecycle and operational evidence is excluded by default. Use `--include-archived` only for audit or recovery workflows.
+
+---
+
+## Compaction and Archival
+
+### `archive`
+
+```bash
+tiro [--db <path>] archive --older-than-days <N> [--dry-run] [--status <status>]
+```
+
+Conservatively archives older operational/fact evidence with `UPDATE` only.
+
+- Default behavior archives only:
+  - facts in `stale` or `superseded`
+  - operational records with `status=closed`
+- `--dry-run` reports the count and evidence keys that would be archived without writing changes.
+- `--status <status>` overrides the default terminal-status filter and archives only rows with that exact status once they pass the age threshold.
+
+### `unarchive`
+
+```bash
+tiro [--db <path>] unarchive [--evidence-key <key>] [--all-since <iso8601>]
+```
+
+Clears `archived_utc` to reverse an archive action.
+
+- `--evidence-key` accepts keys like `fact|123` or `operational|456`
+- `--all-since` clears all archive marks applied on or after the given UTC timestamp
 
 ---
 

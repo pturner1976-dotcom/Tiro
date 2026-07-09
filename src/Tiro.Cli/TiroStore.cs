@@ -283,6 +283,8 @@ public sealed class TiroStore : IDisposable
             UPDATE schema_info SET value = '2' WHERE key = 'schema_version' AND value = '1';
             """);
         EnsureColumn("messages", "source_identity", "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn("operational_records", "archived_utc", "TEXT NULL DEFAULT NULL");
+        EnsureColumn("facts", "archived_utc", "TEXT NULL DEFAULT NULL");
     }
 
     public OperationalRecordReport AddOperationalRecord(
@@ -349,7 +351,7 @@ public sealed class TiroStore : IDisposable
         var normalizedType = string.IsNullOrWhiteSpace(recordType) ? string.Empty : NormalizeOperationalRecordType(recordType);
         using var statement = Prepare(
             """
-            SELECT record_id, record_type, created_utc, text, origin, session_id, status, linked_source_ids, linked_message_ids
+            SELECT record_id, record_type, created_utc, text, origin, session_id, status, archived_utc, linked_source_ids, linked_message_ids
             FROM operational_records
             WHERE ($record_type = '' OR record_type = $record_type)
               AND ($session_id = '' OR session_id = $session_id)
@@ -723,7 +725,7 @@ public sealed class TiroStore : IDisposable
         return results.Take(limit).ToArray();
     }
 
-    public IReadOnlyList<OperationalMemoryEvidence> QueryOperationalRecords(string query, int limit, string? sessionId = null)
+    public IReadOnlyList<OperationalMemoryEvidence> QueryOperationalRecords(string query, int limit, string? sessionId = null, bool includeArchived = false)
     {
         InitializeSchema();
         if (string.IsNullOrWhiteSpace(query))
@@ -743,12 +745,14 @@ public sealed class TiroStore : IDisposable
 
         using var statement = Prepare(
             """
-            SELECT record_id, record_type, created_utc, text, origin, session_id, status, linked_source_ids, linked_message_ids
+            SELECT record_id, record_type, created_utc, text, origin, session_id, status, archived_utc, linked_source_ids, linked_message_ids
             FROM operational_records
             WHERE ($session_id = '' OR session_id = $session_id)
+              AND ($include_archived = 1 OR archived_utc IS NULL)
             ORDER BY created_utc ASC, record_id ASC;
             """);
         statement.BindText(1, sessionId ?? string.Empty);
+        statement.BindInt(2, includeArchived ? 1 : 0);
 
         var evidence = new List<OperationalMemoryEvidence>();
         while (statement.StepRow())
@@ -772,6 +776,7 @@ public sealed class TiroStore : IDisposable
                 record.Origin,
                 record.SessionId,
                 record.Status,
+                record.ArchivedUtc,
                 record.LinkedSourceIds,
                 record.LinkedMessageIds,
                 score.Score,
@@ -1109,7 +1114,7 @@ public sealed class TiroStore : IDisposable
     /// <summary>
     /// Query lifecycle-aware facts matching all terms in the query (lexical).
     /// </summary>
-    public IReadOnlyList<FactRecord> QueryLifecycleFacts(string query, int limit, string? sessionId = null)
+    public IReadOnlyList<FactRecord> QueryLifecycleFacts(string query, int limit, string? sessionId = null, bool includeArchived = false)
     {
         InitializeSchema();
         if (string.IsNullOrWhiteSpace(query))
@@ -1130,12 +1135,14 @@ public sealed class TiroStore : IDisposable
         using var statement = Prepare(
             """
             SELECT fact_id, created_utc, text, status, source_id, origin_identity, session_id,
-                linked_source_ids, linked_message_ids, linked_record_ids, supersedes_fact_id, superseded_by_fact_id, freshness_hint, expires_utc
+                linked_source_ids, linked_message_ids, linked_record_ids, supersedes_fact_id, superseded_by_fact_id, freshness_hint, expires_utc, archived_utc
             FROM facts
             WHERE ($session_id = '' OR session_id = $session_id)
+              AND ($include_archived = 1 OR archived_utc IS NULL)
             ORDER BY created_utc DESC, fact_id DESC;
             """);
         statement.BindText(1, sessionId ?? string.Empty);
+        statement.BindInt(2, includeArchived ? 1 : 0);
 
         var facts = new List<FactRecord>();
         while (statement.StepRow())
@@ -1153,22 +1160,7 @@ public sealed class TiroStore : IDisposable
             int? supersededByFactId = statement.ColumnInt(11);
             if (supersededByFactId == 0) supersededByFactId = null;
 
-            facts.Add(new FactRecord(
-                statement.ColumnInt(0),
-                ParseTimestamp(statement.ColumnText(1)),
-                text,
-                statement.ColumnText(3), // status
-                statement.ColumnText(4),
-                statement.ColumnText(5),
-                statement.ColumnTextOrNull(6),
-                DeserializeStringList(statement.ColumnText(7)),
-                DeserializeLongList(statement.ColumnText(8)),
-                DeserializeLongList(statement.ColumnText(9)),
-                supersedesFactId,
-                supersededByFactId,
-                string.IsNullOrWhiteSpace(statement.ColumnText(12)) ? null : statement.ColumnText(12),
-                string.IsNullOrWhiteSpace(statement.ColumnText(13)) ? null : ParseTimestamp(statement.ColumnText(13))
-                ));
+            facts.Add(ReadFactRecord(statement));
         }
 
         return facts
@@ -2073,7 +2065,7 @@ public sealed class TiroStore : IDisposable
     {
         InitializeSchema();
 
-        string sql = "SELECT fact_id, created_utc, text, status, source_id, origin_identity, session_id, linked_source_ids, linked_message_ids, linked_record_ids, supersedes_fact_id, superseded_by_fact_id, freshness_hint, expires_utc FROM facts";
+        string sql = "SELECT fact_id, created_utc, text, status, source_id, origin_identity, session_id, linked_source_ids, linked_message_ids, linked_record_ids, supersedes_fact_id, superseded_by_fact_id, freshness_hint, expires_utc, archived_utc FROM facts";
         if (!string.IsNullOrWhiteSpace(statusFilter))
         {
             sql += " WHERE status = $status";
@@ -2094,30 +2086,251 @@ public sealed class TiroStore : IDisposable
         var results = new List<FactRecord>();
         while (statement.StepRow())
         {
-            int? supersedesFactId = statement.ColumnInt(10);
-            if (supersedesFactId == 0) supersedesFactId = null;
-            int? supersededByFactId = statement.ColumnInt(11);
-            if (supersededByFactId == 0) supersededByFactId = null;
-
-            results.Add(new FactRecord(
-                statement.ColumnInt(0),
-                ParseTimestamp(statement.ColumnText(1)),
-                statement.ColumnText(2),
-                statement.ColumnText(3),
-                statement.ColumnText(4),
-                statement.ColumnText(5),
-                statement.ColumnTextOrNull(6),
-                DeserializeStringList(statement.ColumnText(7)),
-                DeserializeLongList(statement.ColumnText(8)),
-                DeserializeLongList(statement.ColumnText(9)),
-                supersedesFactId,
-                supersededByFactId,
-                string.IsNullOrWhiteSpace(statement.ColumnText(12)) ? null : statement.ColumnText(12),
-                string.IsNullOrWhiteSpace(statement.ColumnText(13)) ? null : ParseTimestamp(statement.ColumnText(13))
-                ));
+            results.Add(ReadFactRecord(statement));
         }
 
         return results;
+    }
+
+    public TiroArchiveResponse Archive(int olderThanDays, bool dryRun, string? statusOverride = null, DateTimeOffset? now = null)
+    {
+        InitializeSchema();
+        if (olderThanDays <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(olderThanDays), "olderThanDays must be greater than zero.");
+        }
+
+        var candidates = ListArchiveCandidates(olderThanDays, statusOverride, now);
+        if (!dryRun)
+        {
+            var archiveUtc = FormatTimestamp(now ?? DateTimeOffset.UtcNow);
+            foreach (var candidate in candidates)
+            {
+                ArchiveCandidate(candidate, archiveUtc);
+            }
+        }
+
+        var warnings = new List<string>
+        {
+            dryRun
+                ? "Dry run only; no rows were updated."
+                : "Archive applied with UPDATE-only semantics; no evidence was deleted."
+        };
+        if (!string.IsNullOrWhiteSpace(statusOverride))
+        {
+            warnings.Add($"Status override applied: {statusOverride}.");
+        }
+
+        return new TiroArchiveResponse(
+            "ok",
+            olderThanDays,
+            dryRun,
+            string.IsNullOrWhiteSpace(statusOverride) ? null : statusOverride.Trim().ToLowerInvariant(),
+            candidates.Count,
+            candidates,
+            warnings);
+    }
+
+    public TiroUnarchiveResponse Unarchive(string? evidenceKey = null, DateTimeOffset? allSince = null)
+    {
+        InitializeSchema();
+        if (string.IsNullOrWhiteSpace(evidenceKey) && !allSince.HasValue)
+        {
+            throw new InvalidOperationException("Either evidence_key or all_since is required.");
+        }
+
+        var unarchived = 0;
+        if (!string.IsNullOrWhiteSpace(evidenceKey))
+        {
+            unarchived += UnarchiveEvidenceKey(evidenceKey.Trim());
+        }
+
+        if (allSince.HasValue)
+        {
+            unarchived += UnarchiveAllSince(allSince.Value);
+        }
+
+        return new TiroUnarchiveResponse(
+            "ok",
+            string.IsNullOrWhiteSpace(evidenceKey) ? null : evidenceKey.Trim(),
+            allSince,
+            unarchived,
+            new[] { "Unarchive clears archived_utc only; lifecycle status is unchanged." });
+    }
+
+    private List<TiroArchiveCandidate> ListArchiveCandidates(int olderThanDays, string? statusOverride, DateTimeOffset? now = null)
+    {
+        var anchor = now ?? DateTimeOffset.UtcNow;
+        var cutoff = anchor.AddDays(-olderThanDays);
+        var normalizedStatus = string.IsNullOrWhiteSpace(statusOverride) ? null : statusOverride.Trim().ToLowerInvariant();
+        var candidates = new List<TiroArchiveCandidate>();
+
+        using (var statement = Prepare(
+            """
+            SELECT record_id, record_type, created_utc, text, origin, session_id, status, archived_utc, linked_source_ids, linked_message_ids
+            FROM operational_records
+            WHERE created_utc <= $cutoff
+              AND archived_utc IS NULL
+              AND (
+                    ($status_override = '' AND status = 'closed')
+                 OR ($status_override <> '' AND status = $status_override)
+              )
+            ORDER BY created_utc ASC, record_id ASC;
+            """))
+        {
+            statement.BindText(1, FormatTimestamp(cutoff));
+            statement.BindText(2, normalizedStatus ?? string.Empty);
+            while (statement.StepRow())
+            {
+                var record = ReadOperationalRecord(statement);
+                candidates.Add(new TiroArchiveCandidate(
+                    $"operational|{record.RecordId}",
+                    "operational",
+                    record.Status,
+                    record.CreatedUtc,
+                    record.ArchivedUtc,
+                    TruncateArchiveSnippet(record.Text)));
+            }
+        }
+
+        using (var statement = Prepare(
+            """
+            SELECT fact_id, created_utc, text, status, source_id, origin_identity, session_id, linked_source_ids, linked_message_ids,
+                   linked_record_ids, supersedes_fact_id, superseded_by_fact_id, freshness_hint, expires_utc, archived_utc
+            FROM facts
+            WHERE created_utc <= $cutoff
+              AND archived_utc IS NULL
+              AND (
+                    ($status_override = '' AND status IN ('superseded', 'stale'))
+                 OR ($status_override <> '' AND status = $status_override)
+              )
+            ORDER BY created_utc ASC, fact_id ASC;
+            """))
+        {
+            statement.BindText(1, FormatTimestamp(cutoff));
+            statement.BindText(2, normalizedStatus ?? string.Empty);
+            while (statement.StepRow())
+            {
+                var fact = ReadFactRecord(statement);
+                candidates.Add(new TiroArchiveCandidate(
+                    RetrievalPolicy.FactKey(fact),
+                    "fact-lifecycle",
+                    fact.Status,
+                    fact.CreatedUtc,
+                    fact.ArchivedUtc,
+                    TruncateArchiveSnippet(fact.Text)));
+            }
+        }
+
+        return candidates
+            .OrderBy(candidate => candidate.CreatedUtc)
+            .ThenBy(candidate => candidate.EvidenceKey, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private void ArchiveCandidate(TiroArchiveCandidate candidate, string archiveUtc)
+    {
+        if (candidate.Lane == "operational")
+        {
+            using var statement = Prepare(
+                """
+                UPDATE operational_records
+                SET archived_utc = $archived_utc
+                WHERE record_id = $record_id AND archived_utc IS NULL;
+                """);
+            statement.BindText(1, archiveUtc);
+            statement.BindInt64(2, long.Parse(candidate.EvidenceKey.Split('|')[1], CultureInfo.InvariantCulture));
+            statement.StepDone();
+            return;
+        }
+
+        using var factStatement = Prepare(
+            """
+            UPDATE facts
+            SET archived_utc = $archived_utc
+            WHERE fact_id = $fact_id AND archived_utc IS NULL;
+            """);
+        factStatement.BindText(1, archiveUtc);
+        factStatement.BindInt(2, int.Parse(candidate.EvidenceKey.Split('|')[1], CultureInfo.InvariantCulture));
+        factStatement.StepDone();
+    }
+
+    private int UnarchiveEvidenceKey(string evidenceKey)
+    {
+        var parts = evidenceKey.Split('|', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length != 2)
+        {
+            throw new InvalidOperationException("evidence_key must look like operational|<id> or fact|<id>.");
+        }
+
+        return parts[0] switch
+        {
+            "operational" => UnarchiveOperationalRecord(long.Parse(parts[1], CultureInfo.InvariantCulture)),
+            "fact" => UnarchiveFact(int.Parse(parts[1], CultureInfo.InvariantCulture)),
+            _ => throw new InvalidOperationException("Only operational and fact lifecycle evidence can be unarchived.")
+        };
+    }
+
+    private int UnarchiveAllSince(DateTimeOffset allSince)
+    {
+        var total = 0;
+        using (var statement = Prepare(
+            """
+            UPDATE operational_records
+            SET archived_utc = NULL
+            WHERE archived_utc IS NOT NULL AND archived_utc >= $all_since;
+            """))
+        {
+            statement.BindText(1, FormatTimestamp(allSince));
+            statement.StepDone();
+            total += sqlite3_changes(_database);
+        }
+
+        using (var statement = Prepare(
+            """
+            UPDATE facts
+            SET archived_utc = NULL
+            WHERE archived_utc IS NOT NULL AND archived_utc >= $all_since;
+            """))
+        {
+            statement.BindText(1, FormatTimestamp(allSince));
+            statement.StepDone();
+            total += sqlite3_changes(_database);
+        }
+
+        return total;
+    }
+
+    private int UnarchiveOperationalRecord(long recordId)
+    {
+        using var statement = Prepare(
+            """
+            UPDATE operational_records
+            SET archived_utc = NULL
+            WHERE record_id = $record_id AND archived_utc IS NOT NULL;
+            """);
+        statement.BindInt64(1, recordId);
+        statement.StepDone();
+        return sqlite3_changes(_database);
+    }
+
+    private int UnarchiveFact(int factId)
+    {
+        using var statement = Prepare(
+            """
+            UPDATE facts
+            SET archived_utc = NULL
+            WHERE fact_id = $fact_id AND archived_utc IS NOT NULL;
+            """);
+        statement.BindInt(1, factId);
+        statement.StepDone();
+        return sqlite3_changes(_database);
+    }
+
+    private static string TruncateArchiveSnippet(string text)
+    {
+        var normalized = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return normalized.Length <= 160 ? normalized : normalized[..160] + "...";
     }
 
 
@@ -2326,6 +2539,7 @@ public sealed class TiroStore : IDisposable
         {
             sessionId = null;
         }
+        var archivedUtc = statement.ColumnTextOrNull(7);
 
         return new OperationalRecord(
             statement.ColumnLong(0),
@@ -2335,8 +2549,36 @@ public sealed class TiroStore : IDisposable
             statement.ColumnText(4),
             sessionId,
             statement.ColumnText(6),
+            archivedUtc is null ? null : ParseTimestamp(archivedUtc),
+            DeserializeStringList(statement.ColumnText(8)),
+            DeserializeLongList(statement.ColumnText(9)));
+    }
+
+    private static FactRecord ReadFactRecord(SqliteStatement statement)
+    {
+        int? supersedesFactId = statement.ColumnInt(10);
+        if (supersedesFactId == 0) supersedesFactId = null;
+        int? supersededByFactId = statement.ColumnInt(11);
+        if (supersededByFactId == 0) supersededByFactId = null;
+        var expiresUtc = statement.ColumnTextOrNull(13);
+        var archivedUtc = statement.ColumnTextOrNull(14);
+
+        return new FactRecord(
+            statement.ColumnInt(0),
+            ParseTimestamp(statement.ColumnText(1)),
+            statement.ColumnText(2),
+            statement.ColumnText(3),
+            statement.ColumnText(4),
+            statement.ColumnText(5),
+            statement.ColumnTextOrNull(6),
             DeserializeStringList(statement.ColumnText(7)),
-            DeserializeLongList(statement.ColumnText(8)));
+            DeserializeLongList(statement.ColumnText(8)),
+            DeserializeLongList(statement.ColumnText(9)),
+            supersedesFactId,
+            supersededByFactId,
+            string.IsNullOrWhiteSpace(statement.ColumnText(12)) ? null : statement.ColumnText(12),
+            string.IsNullOrWhiteSpace(expiresUtc) ? null : ParseTimestamp(expiresUtc),
+            string.IsNullOrWhiteSpace(archivedUtc) ? null : ParseTimestamp(archivedUtc));
     }
 
     private void EnsureColumn(string tableName, string columnName, string definition)

@@ -9,7 +9,7 @@ public sealed class ContextPacketBuilder
         _store = store;
     }
 
-    public ContextPacket Build(string query, int limit, PlannerRunResult planner, string keyName, RetrievalFilters filters, int contextWindow, string? sessionId = null)
+    public ContextPacket Build(string query, int limit, PlannerRunResult planner, string keyName, RetrievalFilters filters, int contextWindow, string? sessionId = null, bool includeArchived = false)
     {
         var retrievalQuery = string.IsNullOrWhiteSpace(planner.RetrievalQuery) ? query : planner.RetrievalQuery;
         var expandedQueries = BuildExpandedQueries(query, retrievalQuery, planner.Advice);
@@ -24,8 +24,8 @@ public sealed class ContextPacketBuilder
         var recentSessionContext = string.IsNullOrWhiteSpace(sessionId)
             ? Array.Empty<Message>()
             : _store.GetRecentMessages(sessionId, 4).ToArray();
-        var operationalMemory = QueryOperational(expandedQueries, Math.Min(limit, 5), sessionId, queryDiagnostics).ToArray();
-        var lifecycleFacts = QueryLifecycle(expandedQueries, limit, sessionId, queryDiagnostics);
+        var operationalMemory = QueryOperational(expandedQueries, Math.Min(limit, 5), sessionId, queryDiagnostics, includeArchived).ToArray();
+        var lifecycleFacts = QueryLifecycle(expandedQueries, limit, sessionId, queryDiagnostics, includeArchived);
 
         var sourceIds = results
             .Select(result => result.SourceId)
@@ -332,12 +332,12 @@ public sealed class ContextPacketBuilder
             .ToArray();
     }
 
-    private IReadOnlyList<OperationalMemoryEvidence> QueryOperational(IReadOnlyList<string> queries, int limit, string? sessionId, List<ExpandedQueryDiagnostic> diagnostics)
+    private IReadOnlyList<OperationalMemoryEvidence> QueryOperational(IReadOnlyList<string> queries, int limit, string? sessionId, List<ExpandedQueryDiagnostic> diagnostics, bool includeArchived)
     {
         var records = new Dictionary<long, OperationalMemoryEvidence>();
         foreach (var query in queries)
         {
-            var results = _store.QueryOperationalRecords(query, limit, sessionId);
+            var results = _store.QueryOperationalRecords(query, limit, sessionId, includeArchived);
             UpdateDiagnostics(diagnostics, query, operational: results.Count);
             foreach (var result in results)
             {
@@ -356,12 +356,12 @@ public sealed class ContextPacketBuilder
             .ToArray();
     }
 
-    private IReadOnlyList<FactRecord> QueryLifecycle(IReadOnlyList<string> queries, int limit, string? sessionId, List<ExpandedQueryDiagnostic> diagnostics)
+    private IReadOnlyList<FactRecord> QueryLifecycle(IReadOnlyList<string> queries, int limit, string? sessionId, List<ExpandedQueryDiagnostic> diagnostics, bool includeArchived)
     {
         var records = new Dictionary<int, FactRecord>();
         foreach (var query in queries)
         {
-            var results = _store.QueryLifecycleFacts(query, limit, sessionId);
+            var results = _store.QueryLifecycleFacts(query, limit, sessionId, includeArchived);
             UpdateDiagnostics(diagnostics, query, lifecycle: results.Count);
             foreach (var result in results)
             {

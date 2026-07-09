@@ -4,6 +4,11 @@ namespace Tiro.Cli;
 
 public static partial class LexicalSearch
 {
+    private static readonly HashSet<string> ProtectedSuffixWords = new(StringComparer.Ordinal)
+    {
+        "analysis", "billing", "building", "campus", "ceiling", "focus", "meeting", "plus", "process", "speed", "status", "virus", "warning"
+    };
+
     private static readonly HashSet<string> Stopwords = new(StringComparer.Ordinal)
     {
         "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "how",
@@ -199,7 +204,20 @@ public static partial class LexicalSearch
             token = token[..^2];
         }
 
-        if (token.Length > 5 && token.EndsWith("ing", StringComparison.Ordinal))
+        if (ProtectedSuffixWords.Contains(token))
+        {
+            return token;
+        }
+
+        if (token.Length > 4 && token.EndsWith("ies", StringComparison.Ordinal))
+        {
+            token = $"{token[..^3]}y";
+        }
+        else if (token.Length > 4 && EndsWithPluralEs(token))
+        {
+            token = token[..^2];
+        }
+        else if (token.Length > 5 && token.EndsWith("ing", StringComparison.Ordinal))
         {
             token = token[..^3];
         }
@@ -207,12 +225,25 @@ public static partial class LexicalSearch
         {
             token = token[..^2];
         }
-        else if (token.Length > 3 && token.EndsWith("s", StringComparison.Ordinal))
+        else if (token.Length > 3
+            && token.EndsWith("s", StringComparison.Ordinal)
+            && !token.EndsWith("ss", StringComparison.Ordinal)
+            && !token.EndsWith("us", StringComparison.Ordinal)
+            && !token.EndsWith("is", StringComparison.Ordinal))
         {
             token = token[..^1];
         }
 
         return token;
+    }
+
+    private static bool EndsWithPluralEs(string token)
+    {
+        return token.EndsWith("ses", StringComparison.Ordinal)
+            || token.EndsWith("xes", StringComparison.Ordinal)
+            || token.EndsWith("zes", StringComparison.Ordinal)
+            || token.EndsWith("ches", StringComparison.Ordinal)
+            || token.EndsWith("shes", StringComparison.Ordinal);
     }
 
     [GeneratedRegex("[A-Za-z0-9][A-Za-z0-9'.-]*", RegexOptions.Compiled)]

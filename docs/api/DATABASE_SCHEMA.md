@@ -15,6 +15,9 @@ columns, indexes, foreign key relationships, and known limitations.
   `EnsureColumn("messages", "source_identity", "TEXT NOT NULL DEFAULT '')` adds the
   column if it is missing, allowing older databases to work with current code without
   a full migration.
+- Additional additive repairs now backfill `archived_utc TEXT NULL DEFAULT NULL`
+  onto `operational_records` and `facts` when older databases are opened. Existing
+  rows remain unarchived (`NULL`) after migration.
 
 The schema is migration-light by design. It prefers create-if-missing plus additive
 column repair over a full migration framework.
@@ -116,6 +119,8 @@ Explicit operator memory: decisions, todos, warnings, and unknowns.
 | `origin` | TEXT | Provenance label |
 | `session_id` | TEXT | Optional; links to `sessions.session_id` when session-scoped |
 | `created_utc` | TEXT | ISO 8601 UTC timestamp |
+| `status` | TEXT | Operational lifecycle state such as `open` or `closed` |
+| `archived_utc` | TEXT | Nullable ISO 8601 timestamp; non-null means the row is archived and excluded from retrieval by default |
 
 ---
 
@@ -140,6 +145,7 @@ or unknown, and may reference other records for provenance.
 | `superseded_by_fact_id` | INTEGER | ID of the fact that supersedes this one, if any |
 | `freshness_hint` | TEXT | Optional human-readable freshness label |
 | `expires_utc` | TEXT | Optional ISO 8601 expiry timestamp |
+| `archived_utc` | TEXT | Nullable ISO 8601 timestamp; archival is orthogonal to lifecycle status and never overwrites `status` |
 
 ---
 

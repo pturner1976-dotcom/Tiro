@@ -7,6 +7,7 @@ public sealed record CliOptions(
     int Limit,
     PlannerMode PlannerMode,
     bool DebugPlanner,
+    bool IncludeArchived,
     RetrievalFilters Filters,
     int ContextWindow,
     string? SessionId)
@@ -17,6 +18,7 @@ public sealed record CliOptions(
         var limit = 3;
         var plannerMode = PlannerMode.Auto;
         var debugPlanner = false;
+        var includeArchived = false;
         string? sourceId = null;
         string? documentId = null;
         string? sessionId = null;
@@ -57,6 +59,12 @@ public sealed record CliOptions(
             if (arg == "--debug-planner")
             {
                 debugPlanner = true;
+                continue;
+            }
+
+            if (arg == "--include-archived")
+            {
+                includeArchived = true;
                 continue;
             }
 
@@ -105,10 +113,10 @@ public sealed record CliOptions(
         var filters = new RetrievalFilters(sourceId, documentId);
         if (remaining.Count == 0)
         {
-            return new CliOptions(databasePath, "help", Array.Empty<string>(), limit, plannerMode, debugPlanner, filters, contextWindow, sessionId);
+            return new CliOptions(databasePath, "help", Array.Empty<string>(), limit, plannerMode, debugPlanner, includeArchived, filters, contextWindow, sessionId);
         }
 
-        return new CliOptions(databasePath, remaining[0], remaining.Skip(1).ToArray(), limit, plannerMode, debugPlanner, filters, contextWindow, sessionId);
+        return new CliOptions(databasePath, remaining[0], remaining.Skip(1).ToArray(), limit, plannerMode, debugPlanner, includeArchived, filters, contextWindow, sessionId);
     }
 
     private static bool TryParsePlannerMode(string value, out PlannerMode mode)

@@ -9,13 +9,24 @@ public static class RetrievalPolicy
     public const string Lifecycle = "fact-lifecycle";
     public const string General = "general";
 
+    private static readonly RetrievalModeDefinition[] ModeDefinitions =
+    {
+        new(Lifecycle, "matched lifecycle/status terms", NormalizeCandidates("conflict", "conflicting", "stale", "superseded", "lifecycle", "fact-lifecycle")),
+        new(Unresolved, "matched unresolved work terms", NormalizeCandidates("todo", "todos", "unresolved", "blocked", "blocker", "open", "unknown", "warning", "warnings")),
+        new(Decision, "matched decision/intent terms", NormalizeCandidates("decision", "decisions", "decided", "intent", "plan", "chosen", "choice")),
+        new(Archive, "matched archive/reference terms", NormalizeCandidates("history", "historical", "archive", "archival", "reference", "document", "documents", "source", "sources", "provenance", "lookup")),
+        new(CurrentState, "matched current-state terms", NormalizeCandidates("current", "now", "latest", "today", "active", "status", "state"))
+    };
+
     public static RetrievalPolicySummary Build(
         IReadOnlyList<string> terms,
         IReadOnlyList<RetrievalResult> corpus,
         IReadOnlyList<SessionMessageEvidence> session,
         IReadOnlyList<OperationalMemoryEvidence> operational,
-        IReadOnlyList<FactRecord> facts)
+        IReadOnlyList<FactRecord> facts,
+        RetrievalWeights? weights = null)
     {
+        weights ??= RetrievalWeights.Default;
         var classification = Classify(terms);
         var timestamps = corpus.Select(item => (DateTimeOffset?)item.IngestedUtc)
             .Concat(session.Select(item => (DateTimeOffset?)item.TimestampUtc))
@@ -26,16 +37,16 @@ public static class RetrievalPolicy
             .ToArray();
         var anchor = timestamps.Length == 0 ? DateTimeOffset.UtcNow : timestamps.Max();
 
-        var signals = corpus.Select(item => ScoreCorpus(item, classification.Mode, anchor))
-            .Concat(session.Select(item => ScoreSession(item, classification.Mode, anchor)))
-            .Concat(operational.Select(item => ScoreOperational(item, classification.Mode, anchor)))
-            .Concat(facts.Select(item => ScoreFact(item, terms, classification.Mode, anchor)))
+        var signals = corpus.Select(item => ScoreCorpus(item, classification.Mode, anchor, weights))
+            .Concat(session.Select(item => ScoreSession(item, classification.Mode, anchor, weights)))
+            .Concat(operational.Select(item => ScoreOperational(item, classification.Mode, anchor, weights)))
+            .Concat(facts.Select(item => ScoreFact(item, terms, classification.Mode, anchor, weights)))
             .OrderByDescending(item => item.FinalScore)
             .ThenByDescending(item => item.TimestampUtc)
             .ThenBy(item => item.EvidenceKey, StringComparer.Ordinal)
             .ToArray();
 
-        return new RetrievalPolicySummary(classification.Mode, classification.Reason, signals);
+        return new RetrievalPolicySummary(classification.Mode, classification.Reason, classification.CompetingModes, signals);
     }
 
     public static RetrievalPolicySignal? FindSignal(RetrievalPolicySummary policy, FactRecord fact)
@@ -58,48 +69,68 @@ public static class RetrievalPolicy
         };
     }
 
-    private static (string Mode, string Reason) Classify(IReadOnlyList<string> terms)
+    private static RetrievalClassification Classify(IReadOnlyList<string> terms)
     {
         var set = terms.ToHashSet(StringComparer.Ordinal);
-        if (ContainsAny(set, "conflict", "conflicting", "stale", "superseded", "lifecycle", "fact-lifecycle"))
+        var matches = ModeDefinitions
+            .Select((definition, precedence) => new
+            {
+                definition.Mode,
+                definition.SingleModeReason,
+                definition.Candidates,
+                Precedence = precedence,
+                MatchedTerms = definition.Candidates.Where(set.Contains).ToArray()
+            })
+            .Where(item => item.MatchedTerms.Length > 0)
+            .Select(item => new RetrievalClassificationCandidate(
+                item.Mode,
+                item.SingleModeReason,
+                item.Precedence,
+                item.MatchedTerms))
+            .ToArray();
+
+        if (matches.Length == 0)
         {
-            return (Lifecycle, "matched lifecycle/status terms");
+            return new RetrievalClassification(General, "no mode-specific terms matched", Array.Empty<RetrievalModeMatch>());
         }
 
-        if (ContainsAny(set, "todo", "todos", "unresolved", "blocked", "blocker", "open", "unknown", "warning", "warnings"))
+        var winner = matches
+            .OrderByDescending(item => item.MatchedTerms.Count)
+            .ThenBy(item => item.Precedence)
+            .First();
+        var competingModes = matches
+            .Select(item => new RetrievalModeMatch(item.Mode, item.MatchedTerms))
+            .ToArray();
+
+        if (matches.Length == 1)
         {
-            return (Unresolved, "matched unresolved work terms");
+            return new RetrievalClassification(winner.Mode, winner.SingleModeReason, competingModes);
         }
 
-        if (ContainsAny(set, "decision", "decisions", "decided", "intent", "plan", "chosen", "choice"))
-        {
-            return (Decision, "matched decision/intent terms");
-        }
-
-        if (ContainsAny(set, "history", "historical", "archive", "archival", "reference", "document", "documents", "source", "sources", "provenance", "lookup"))
-        {
-            return (Archive, "matched archive/reference terms");
-        }
-
-        if (ContainsAny(set, "current", "now", "latest", "today", "active", "status", "state"))
-        {
-            return (CurrentState, "matched current-state terms");
-        }
-
-        return (General, "no mode-specific terms matched");
+        var nextBest = matches
+            .Where(item => !string.Equals(item.Mode, winner.Mode, StringComparison.Ordinal))
+            .OrderByDescending(item => item.MatchedTerms.Count)
+            .ThenBy(item => item.Precedence)
+            .First();
+        var tie = winner.MatchedTerms.Count == nextBest.MatchedTerms.Count;
+        var reason = tie
+            ? $"matched {winner.MatchedTerms.Count} {winner.Mode} terms; tie resolved by precedence over {nextBest.Mode}"
+            : $"matched {winner.MatchedTerms.Count} {winner.Mode} terms (plurality over {nextBest.MatchedTerms.Count} {nextBest.Mode} term{(nextBest.MatchedTerms.Count == 1 ? string.Empty : "s")})";
+        return new RetrievalClassification(winner.Mode, reason, competingModes);
     }
 
-    private static RetrievalPolicySignal ScoreCorpus(RetrievalResult item, string mode, DateTimeOffset anchor)
+    private static RetrievalPolicySignal ScoreCorpus(RetrievalResult item, string mode, DateTimeOffset anchor, RetrievalWeights weights)
     {
         var relevance = item.Score;
-        var recency = RecencyScore(item.IngestedUtc, anchor);
-        const int importance = 10;
-        const int lifecycle = 20;
+        var recency = RecencyScore(item.IngestedUtc, anchor, weights);
+        var importance = weights.CorpusImportance;
+        var lifecycle = weights.CorpusLifecycle;
         var modeScore = mode switch
         {
-            Archive => 35,
-            CurrentState => -10,
-            Decision or Unresolved => -10,
+            Archive => weights.CorpusArchiveModeBonus,
+            CurrentState => weights.CorpusCurrentStateModePenalty,
+            Decision => weights.CorpusDecisionModePenalty,
+            Unresolved => weights.CorpusUnresolvedModePenalty,
             _ => 0
         };
         var final = relevance + recency + importance + lifecycle + modeScore;
@@ -115,18 +146,36 @@ public static class RetrievalPolicy
             final,
             item.IngestedUtc,
             "active",
+            false,
             "normal",
             "ingested_utc",
-            Explain(relevance, recency, importance, lifecycle, modeScore));
+            Explain(
+                relevance,
+                recency,
+                importance,
+                lifecycle,
+                modeScore,
+                "corpus",
+                BuildRecencyWeightLabel(item.IngestedUtc, anchor, weights),
+                $"CorpusImportance={weights.CorpusImportance}",
+                $"CorpusLifecycle={weights.CorpusLifecycle}",
+                mode switch
+                {
+                    Archive => $"CorpusArchiveModeBonus={weights.CorpusArchiveModeBonus}",
+                    CurrentState => $"CorpusCurrentStateModePenalty={weights.CorpusCurrentStateModePenalty}",
+                    Decision => $"CorpusDecisionModePenalty={weights.CorpusDecisionModePenalty}",
+                    Unresolved => $"CorpusUnresolvedModePenalty={weights.CorpusUnresolvedModePenalty}",
+                    _ => "CorpusMode=0"
+                }));
     }
 
-    private static RetrievalPolicySignal ScoreSession(SessionMessageEvidence item, string mode, DateTimeOffset anchor)
+    private static RetrievalPolicySignal ScoreSession(SessionMessageEvidence item, string mode, DateTimeOffset anchor, RetrievalWeights weights)
     {
         var relevance = item.Score;
-        var recency = RecencyScore(item.TimestampUtc, anchor);
-        const int importance = 20;
-        const int lifecycle = 20;
-        var modeScore = mode == CurrentState ? 30 : mode == Archive ? -15 : 0;
+        var recency = RecencyScore(item.TimestampUtc, anchor, weights);
+        var importance = weights.SessionImportance;
+        var lifecycle = weights.SessionLifecycle;
+        var modeScore = mode == CurrentState ? weights.SessionCurrentStateModeBonus : mode == Archive ? weights.SessionArchiveModePenalty : 0;
         var final = relevance + recency + importance + lifecycle + modeScore;
         return new RetrievalPolicySignal(
             $"session|{item.SessionId}|{item.MessageId}",
@@ -140,30 +189,45 @@ public static class RetrievalPolicy
             final,
             item.TimestampUtc,
             "active",
+            false,
             "normal",
             "timestamp_utc",
-            Explain(relevance, recency, importance, lifecycle, modeScore));
+            Explain(
+                relevance,
+                recency,
+                importance,
+                lifecycle,
+                modeScore,
+                "session",
+                BuildRecencyWeightLabel(item.TimestampUtc, anchor, weights),
+                $"SessionImportance={weights.SessionImportance}",
+                $"SessionLifecycle={weights.SessionLifecycle}",
+                mode == CurrentState
+                    ? $"SessionCurrentStateModeBonus={weights.SessionCurrentStateModeBonus}"
+                    : mode == Archive
+                        ? $"SessionArchiveModePenalty={weights.SessionArchiveModePenalty}"
+                        : "SessionMode=0"));
     }
 
-    private static RetrievalPolicySignal ScoreOperational(OperationalMemoryEvidence item, string mode, DateTimeOffset anchor)
+    private static RetrievalPolicySignal ScoreOperational(OperationalMemoryEvidence item, string mode, DateTimeOffset anchor, RetrievalWeights weights)
     {
         var relevance = item.Score;
-        var recency = RecencyScore(item.CreatedUtc, anchor);
+        var recency = RecencyScore(item.CreatedUtc, anchor, weights);
         var importance = item.RecordType switch
         {
-            "decision" => 40,
-            "warning" => 40,
-            "todo" => 35,
-            "unknown" => 20,
-            _ => 15
+            "decision" => weights.OperationalDecisionImportance,
+            "warning" => weights.OperationalWarningImportance,
+            "todo" => weights.OperationalTodoImportance,
+            "unknown" => weights.OperationalUnknownImportance,
+            _ => weights.OperationalDefaultImportance
         };
-        var lifecycle = string.Equals(item.Status, "closed", StringComparison.Ordinal) ? 5 : 25;
+        var lifecycle = string.Equals(item.Status, "closed", StringComparison.Ordinal) ? weights.OperationalClosedLifecycle : weights.OperationalOpenLifecycle;
         var modeScore = mode switch
         {
-            Decision when item.RecordType == "decision" => 80,
-            Unresolved when item.RecordType is "todo" or "warning" or "unknown" => 70,
-            CurrentState => 10,
-            Archive => -20,
+            Decision when item.RecordType == "decision" => weights.OperationalDecisionModeBonus,
+            Unresolved when item.RecordType is "todo" or "warning" or "unknown" => weights.OperationalUnresolvedModeBonus,
+            CurrentState => weights.OperationalCurrentStateModeBonus,
+            Archive => weights.OperationalArchiveModePenalty,
             _ => 0
         };
         var final = relevance + recency + importance + lifecycle + modeScore;
@@ -179,24 +243,44 @@ public static class RetrievalPolicy
             final,
             item.CreatedUtc,
             item.Status,
+            item.ArchivedUtc.HasValue,
             item.RecordType,
             "created_utc",
-            Explain(relevance, recency, importance, lifecycle, modeScore));
+            Explain(
+                relevance,
+                recency,
+                importance,
+                lifecycle,
+                modeScore,
+                "operational",
+                BuildRecencyWeightLabel(item.CreatedUtc, anchor, weights),
+                BuildOperationalImportanceWeightLabel(item.RecordType, weights),
+                string.Equals(item.Status, "closed", StringComparison.Ordinal)
+                    ? $"OperationalClosedLifecycle={weights.OperationalClosedLifecycle}"
+                    : $"OperationalOpenLifecycle={weights.OperationalOpenLifecycle}",
+                mode switch
+                {
+                    Decision when item.RecordType == "decision" => $"OperationalDecisionModeBonus={weights.OperationalDecisionModeBonus}",
+                    Unresolved when item.RecordType is "todo" or "warning" or "unknown" => $"OperationalUnresolvedModeBonus={weights.OperationalUnresolvedModeBonus}",
+                    CurrentState => $"OperationalCurrentStateModeBonus={weights.OperationalCurrentStateModeBonus}",
+                    Archive => $"OperationalArchiveModePenalty={weights.OperationalArchiveModePenalty}",
+                    _ => "OperationalMode=0"
+                }));
     }
 
-    private static RetrievalPolicySignal ScoreFact(FactRecord item, IReadOnlyList<string> terms, string mode, DateTimeOffset anchor)
+    private static RetrievalPolicySignal ScoreFact(FactRecord item, IReadOnlyList<string> terms, string mode, DateTimeOffset anchor, RetrievalWeights weights)
     {
         var lexicalScore = LexicalSearch.Score(item.Text, $"{item.Status} {item.SourceId} {item.OriginIdentity} {item.FreshnessHint ?? string.Empty}", terms);
         var relevance = lexicalScore.Score;
-        var recency = RecencyScore(item.CreatedUtc, anchor);
-        var importance = ImportanceFromHint(item.FreshnessHint);
-        var lifecycle = LifecycleScore(item, anchor);
+        var recency = RecencyScore(item.CreatedUtc, anchor, weights);
+        var importance = ImportanceFromHint(item.FreshnessHint, weights);
+        var lifecycle = LifecycleScore(item, anchor, weights);
         var modeScore = mode switch
         {
-            Lifecycle => 35,
-            CurrentState when item.Status == TiroStore.FactStatus.Active => 25,
-            CurrentState => -10,
-            Archive => -5,
+            Lifecycle => weights.FactLifecycleModeBonus,
+            CurrentState when item.Status == TiroStore.FactStatus.Active => weights.FactCurrentStateActiveModeBonus,
+            CurrentState => weights.FactCurrentStateNonActiveModePenalty,
+            Archive => weights.FactArchiveModePenalty,
             _ => 0
         };
         var final = relevance + recency + importance + lifecycle + modeScore;
@@ -212,79 +296,189 @@ public static class RetrievalPolicy
             final,
             item.CreatedUtc,
             item.Status,
+            item.ArchivedUtc.HasValue,
             item.FreshnessHint ?? "normal",
             item.ExpiresUtc.HasValue ? $"expires_utc={item.ExpiresUtc.Value:O}" : "created_utc",
-            Explain(relevance, recency, importance, lifecycle, modeScore));
+            Explain(
+                relevance,
+                recency,
+                importance,
+                lifecycle,
+                modeScore,
+                "fact",
+                BuildRecencyWeightLabel(item.CreatedUtc, anchor, weights),
+                BuildImportanceWeightLabel(item.FreshnessHint, weights),
+                BuildLifecycleWeightLabel(item, anchor, weights),
+                mode switch
+                {
+                    Lifecycle => $"FactLifecycleModeBonus={weights.FactLifecycleModeBonus}",
+                    CurrentState when item.Status == TiroStore.FactStatus.Active => $"FactCurrentStateActiveModeBonus={weights.FactCurrentStateActiveModeBonus}",
+                    CurrentState => $"FactCurrentStateNonActiveModePenalty={weights.FactCurrentStateNonActiveModePenalty}",
+                    Archive => $"FactArchiveModePenalty={weights.FactArchiveModePenalty}",
+                    _ => "FactMode=0"
+                }));
     }
 
-    private static int RecencyScore(DateTimeOffset timestamp, DateTimeOffset anchor)
+    private static int RecencyScore(DateTimeOffset timestamp, DateTimeOffset anchor, RetrievalWeights weights)
     {
         var age = anchor - timestamp;
-        if (age <= TimeSpan.FromMinutes(5))
+        if (age <= weights.RecencyWithinFiveMinutesMaxAge)
         {
-            return 40;
+            return weights.RecencyWithinFiveMinutesScore;
         }
-        if (age <= TimeSpan.FromHours(24))
+        if (age <= weights.RecencyWithinTwentyFourHoursMaxAge)
         {
-            return 35;
+            return weights.RecencyWithinTwentyFourHoursScore;
         }
-        if (age <= TimeSpan.FromDays(7))
+        if (age <= weights.RecencyWithinSevenDaysMaxAge)
         {
-            return 25;
+            return weights.RecencyWithinSevenDaysScore;
         }
-        if (age <= TimeSpan.FromDays(30))
+        if (age <= weights.RecencyWithinThirtyDaysMaxAge)
         {
-            return 15;
+            return weights.RecencyWithinThirtyDaysScore;
         }
 
-        return 5;
+        return weights.RecencyOlderScore;
     }
 
-    private static int ImportanceFromHint(string? hint)
+    private static int ImportanceFromHint(string? hint, RetrievalWeights weights)
     {
         if (string.IsNullOrWhiteSpace(hint))
         {
-            return 25;
+            return weights.ImportanceDefault;
         }
 
         var normalized = hint.Trim().ToLowerInvariant();
         if (normalized.Contains("critical", StringComparison.Ordinal) || normalized.Contains("high", StringComparison.Ordinal) || normalized.Contains("important", StringComparison.Ordinal))
         {
-            return 45;
+            return weights.ImportanceHigh;
         }
         if (normalized.Contains("low", StringComparison.Ordinal))
         {
-            return 10;
+            return weights.ImportanceLow;
         }
 
-        return 25;
+        return weights.ImportanceDefault;
     }
 
-    private static int LifecycleScore(FactRecord fact, DateTimeOffset anchor)
+    private static int LifecycleScore(FactRecord fact, DateTimeOffset anchor, RetrievalWeights weights)
     {
         if (fact.ExpiresUtc.HasValue && fact.ExpiresUtc.Value <= anchor)
         {
-            return -40;
+            return weights.LifecycleExpired;
         }
 
         return fact.Status switch
         {
-            TiroStore.FactStatus.Active => 30,
-            TiroStore.FactStatus.Unknown => 5,
-            TiroStore.FactStatus.Stale => -20,
-            TiroStore.FactStatus.Superseded => -40,
-            TiroStore.FactStatus.Conflicting => -30,
+            TiroStore.FactStatus.Active => weights.LifecycleActive,
+            TiroStore.FactStatus.Unknown => weights.LifecycleUnknown,
+            TiroStore.FactStatus.Stale => weights.LifecycleStale,
+            TiroStore.FactStatus.Superseded => weights.LifecycleSuperseded,
+            TiroStore.FactStatus.Conflicting => weights.LifecycleConflicting,
             _ => 0
         };
     }
 
-    private static bool ContainsAny(HashSet<string> terms, params string[] candidates)
+    private static string BuildRecencyWeightLabel(DateTimeOffset timestamp, DateTimeOffset anchor, RetrievalWeights weights)
     {
-        return candidates.Any(terms.Contains);
+        var age = anchor - timestamp;
+        if (age <= weights.RecencyWithinFiveMinutesMaxAge)
+        {
+            return $"RecencyWithinFiveMinutesScore={weights.RecencyWithinFiveMinutesScore}";
+        }
+        if (age <= weights.RecencyWithinTwentyFourHoursMaxAge)
+        {
+            return $"RecencyWithinTwentyFourHoursScore={weights.RecencyWithinTwentyFourHoursScore}";
+        }
+        if (age <= weights.RecencyWithinSevenDaysMaxAge)
+        {
+            return $"RecencyWithinSevenDaysScore={weights.RecencyWithinSevenDaysScore}";
+        }
+        if (age <= weights.RecencyWithinThirtyDaysMaxAge)
+        {
+            return $"RecencyWithinThirtyDaysScore={weights.RecencyWithinThirtyDaysScore}";
+        }
+
+        return $"RecencyOlderScore={weights.RecencyOlderScore}";
     }
 
-    private static string Explain(int relevance, int recency, int importance, int lifecycle, int mode)
+    private static string BuildImportanceWeightLabel(string? hint, RetrievalWeights weights)
     {
-        return $"final=relevance({relevance})+recency({recency})+importance({importance})+lifecycle({lifecycle})+mode({mode})";
+        if (string.IsNullOrWhiteSpace(hint))
+        {
+            return $"ImportanceDefault={weights.ImportanceDefault}";
+        }
+
+        var normalized = hint.Trim().ToLowerInvariant();
+        if (normalized.Contains("critical", StringComparison.Ordinal) || normalized.Contains("high", StringComparison.Ordinal) || normalized.Contains("important", StringComparison.Ordinal))
+        {
+            return $"ImportanceHigh={weights.ImportanceHigh}";
+        }
+        if (normalized.Contains("low", StringComparison.Ordinal))
+        {
+            return $"ImportanceLow={weights.ImportanceLow}";
+        }
+
+        return $"ImportanceDefault={weights.ImportanceDefault}";
     }
+
+    private static string BuildLifecycleWeightLabel(FactRecord fact, DateTimeOffset anchor, RetrievalWeights weights)
+    {
+        if (fact.ExpiresUtc.HasValue && fact.ExpiresUtc.Value <= anchor)
+        {
+            return $"LifecycleExpired={weights.LifecycleExpired}";
+        }
+
+        return fact.Status switch
+        {
+            TiroStore.FactStatus.Active => $"LifecycleActive={weights.LifecycleActive}",
+            TiroStore.FactStatus.Unknown => $"LifecycleUnknown={weights.LifecycleUnknown}",
+            TiroStore.FactStatus.Stale => $"LifecycleStale={weights.LifecycleStale}",
+            TiroStore.FactStatus.Superseded => $"LifecycleSuperseded={weights.LifecycleSuperseded}",
+            TiroStore.FactStatus.Conflicting => $"LifecycleConflicting={weights.LifecycleConflicting}",
+            _ => "Lifecycle=0"
+        };
+    }
+
+    private static string BuildOperationalImportanceWeightLabel(string recordType, RetrievalWeights weights)
+    {
+        return recordType switch
+        {
+            "decision" => $"OperationalDecisionImportance={weights.OperationalDecisionImportance}",
+            "warning" => $"OperationalWarningImportance={weights.OperationalWarningImportance}",
+            "todo" => $"OperationalTodoImportance={weights.OperationalTodoImportance}",
+            "unknown" => $"OperationalUnknownImportance={weights.OperationalUnknownImportance}",
+            _ => $"OperationalDefaultImportance={weights.OperationalDefaultImportance}"
+        };
+    }
+
+    private static string Explain(
+        int relevance,
+        int recency,
+        int importance,
+        int lifecycle,
+        int mode,
+        string lane,
+        string recencyWeight,
+        string importanceWeight,
+        string lifecycleWeight,
+        string modeWeight)
+    {
+        return $"lane={lane}; final=relevance({relevance})+recency({recency} using {recencyWeight})+importance({importance} using {importanceWeight})+lifecycle({lifecycle} using {lifecycleWeight})+mode({mode} using {modeWeight})";
+    }
+
+    private static string[] NormalizeCandidates(params string[] values)
+    {
+        return values
+            .SelectMany(LexicalSearch.Tokenize)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private sealed record RetrievalModeDefinition(string Mode, string SingleModeReason, IReadOnlyList<string> Candidates);
+
+    private sealed record RetrievalClassification(string Mode, string Reason, IReadOnlyList<RetrievalModeMatch> CompetingModes);
+
+    private sealed record RetrievalClassificationCandidate(string Mode, string SingleModeReason, int Precedence, IReadOnlyList<string> MatchedTerms);
 }

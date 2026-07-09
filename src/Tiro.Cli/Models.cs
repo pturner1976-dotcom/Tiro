@@ -152,7 +152,8 @@ public sealed record FactRecord(
     [property: JsonPropertyName("supersedes_fact_id")] int? SupersedesFactId,
     [property: JsonPropertyName("superseded_by_fact_id")] int? SupersededByFactId,
     [property: JsonPropertyName("freshness_hint")] string? FreshnessHint,
-    [property: JsonPropertyName("expires_utc")] DateTimeOffset? ExpiresUtc)
+    [property: JsonPropertyName("expires_utc")] DateTimeOffset? ExpiresUtc,
+    [property: JsonPropertyName("archived_utc")] DateTimeOffset? ArchivedUtc = null)
 {
     [property: JsonPropertyName("evidence_type")]
     public string EvidenceType { get; init; } = "fact-lifecycle";
@@ -165,7 +166,12 @@ public sealed record FactConflictRecord(
 public sealed record RetrievalPolicySummary(
     [property: JsonPropertyName("query_mode")] string QueryMode,
     [property: JsonPropertyName("mode_reason")] string ModeReason,
+    [property: JsonPropertyName("competing_modes")] IReadOnlyList<RetrievalModeMatch> CompetingModes,
     [property: JsonPropertyName("signals")] IReadOnlyList<RetrievalPolicySignal> Signals);
+
+public sealed record RetrievalModeMatch(
+    [property: JsonPropertyName("mode")] string Mode,
+    [property: JsonPropertyName("matched_terms")] IReadOnlyList<string> MatchedTerms);
 
 public sealed record RetrievalPolicySignal(
     [property: JsonPropertyName("evidence_key")] string EvidenceKey,
@@ -179,6 +185,7 @@ public sealed record RetrievalPolicySignal(
     [property: JsonPropertyName("final_score")] int FinalScore,
     [property: JsonPropertyName("timestamp_utc")] DateTimeOffset? TimestampUtc,
     [property: JsonPropertyName("lifecycle_state")] string LifecycleState,
+    [property: JsonPropertyName("archived")] bool Archived,
     [property: JsonPropertyName("importance_hint")] string ImportanceHint,
     [property: JsonPropertyName("freshness_hint")] string FreshnessHint,
     [property: JsonPropertyName("explanation")] string Explanation);
@@ -197,6 +204,7 @@ public sealed record OperationalRecord(
     [property: JsonPropertyName("origin")] string Origin,
     [property: JsonPropertyName("session_id")] string? SessionId,
     [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("archived_utc")] DateTimeOffset? ArchivedUtc,
     [property: JsonPropertyName("linked_source_ids")] IReadOnlyList<string> LinkedSourceIds,
     [property: JsonPropertyName("linked_message_ids")] IReadOnlyList<long> LinkedMessageIds);
 
@@ -209,6 +217,7 @@ public sealed record OperationalMemoryEvidence(
     [property: JsonPropertyName("origin")] string Origin,
     [property: JsonPropertyName("session_id")] string? SessionId,
     [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("archived_utc")] DateTimeOffset? ArchivedUtc,
     [property: JsonPropertyName("linked_source_ids")] IReadOnlyList<string> LinkedSourceIds,
     [property: JsonPropertyName("linked_message_ids")] IReadOnlyList<long> LinkedMessageIds,
     [property: JsonPropertyName("score")] int Score,
@@ -424,12 +433,16 @@ public sealed record TiroSearchDebugRequest(
     [property: JsonPropertyName("document_id")] string? DocumentId = null,
     [property: JsonPropertyName("session_id")] string? SessionId = null,
     [property: JsonPropertyName("planner_mode")] PlannerMode PlannerMode = PlannerMode.Auto,
-    [property: JsonPropertyName("debug_planner")] bool DebugPlanner = false);
+    [property: JsonPropertyName("debug_planner")] bool DebugPlanner = false,
+    [property: JsonPropertyName("include_archived")] bool IncludeArchived = false);
 
 public sealed record TiroSearchDiagnostics(
     [property: JsonPropertyName("database_path")] string DatabasePath,
     [property: JsonPropertyName("original_query")] string OriginalQuery,
     [property: JsonPropertyName("normalized_query_terms")] IReadOnlyList<string> NormalizedQueryTerms,
+    [property: JsonPropertyName("query_mode")] string QueryMode,
+    [property: JsonPropertyName("mode_reason")] string ModeReason,
+    [property: JsonPropertyName("competing_modes")] IReadOnlyList<RetrievalModeMatch> CompetingModes,
     [property: JsonPropertyName("planner_mode")] string PlannerMode,
     [property: JsonPropertyName("planner_status")] string PlannerStatus,
     [property: JsonPropertyName("semantic_intent")] string SemanticIntent,
@@ -655,7 +668,8 @@ public sealed record TiroRecallRequest(
     [property: JsonPropertyName("debug_planner")] bool DebugPlanner = false,
     [property: JsonPropertyName("session_limit")] int SessionLimit = 10,
     [property: JsonPropertyName("source_limit")] int SourceLimit = 20,
-    [property: JsonPropertyName("document_limit")] int DocumentLimit = 20);
+    [property: JsonPropertyName("document_limit")] int DocumentLimit = 20,
+    [property: JsonPropertyName("include_archived")] bool IncludeArchived = false);
 
 public sealed record TiroProxyBuildRequest(
     [property: JsonPropertyName("database_path")] string DatabasePath,
@@ -695,6 +709,8 @@ public sealed record TiroRecallEvidenceItem(
     [property: JsonPropertyName("document_id")] string? DocumentId,
     [property: JsonPropertyName("record_type")] string? RecordType,
     [property: JsonPropertyName("timestamp_utc")] DateTimeOffset? TimestampUtc,
+    [property: JsonPropertyName("archived")] bool Archived,
+    [property: JsonPropertyName("archived_utc")] DateTimeOffset? ArchivedUtc,
     [property: JsonPropertyName("score")] int Score,
     [property: JsonPropertyName("matched_terms")] IReadOnlyList<string> MatchedTerms,
     [property: JsonPropertyName("snippet")] string Snippet,
@@ -703,3 +719,27 @@ public sealed record TiroRecallEvidenceItem(
     [property: JsonPropertyName("pointer_id")] string? PointerId = null,
     [property: JsonPropertyName("proxy_title")] string? ProxyTitle = null,
     [property: JsonPropertyName("proxy_breadcrumb")] string? ProxyBreadcrumb = null);
+
+public sealed record TiroArchiveCandidate(
+    [property: JsonPropertyName("evidence_key")] string EvidenceKey,
+    [property: JsonPropertyName("lane")] string Lane,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("created_utc")] DateTimeOffset CreatedUtc,
+    [property: JsonPropertyName("archived_utc")] DateTimeOffset? ArchivedUtc,
+    [property: JsonPropertyName("text_snippet")] string TextSnippet);
+
+public sealed record TiroArchiveResponse(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("older_than_days")] int OlderThanDays,
+    [property: JsonPropertyName("dry_run")] bool DryRun,
+    [property: JsonPropertyName("status_override")] string? StatusOverride,
+    [property: JsonPropertyName("archived_count")] int ArchivedCount,
+    [property: JsonPropertyName("candidates")] IReadOnlyList<TiroArchiveCandidate> Candidates,
+    [property: JsonPropertyName("warnings")] IReadOnlyList<string> Warnings);
+
+public sealed record TiroUnarchiveResponse(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("evidence_key")] string? EvidenceKey,
+    [property: JsonPropertyName("all_since")] DateTimeOffset? AllSince,
+    [property: JsonPropertyName("unarchived_count")] int UnarchivedCount,
+    [property: JsonPropertyName("warnings")] IReadOnlyList<string> Warnings);

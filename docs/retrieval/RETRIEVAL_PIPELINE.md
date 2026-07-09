@@ -21,6 +21,22 @@ The `query` and `recall` commands use lexical retrieval plus an optional advisor
 
 The same normalization is applied to both the query and the indexed fields, so comparisons are consistent.
 
+### Current Stemming Rules
+
+Normalization is intentionally small and deterministic rather than a full linguistic stemmer.
+
+1. Lowercase the token and trim surrounding `'`, `.`, `-`, and `_`.
+2. Collapse possessives ending in `'s` to the base token.
+3. Preserve a protected exception list before suffix stripping:
+   `analysis`, `billing`, `building`, `campus`, `ceiling`, `focus`, `meeting`, `plus`, `process`, `speed`, `status`, `virus`, `warning`
+4. Collapse `ies` plurals to `y`.
+5. Collapse `es` plurals for `ses` / `xes` / `zes` / `ches` / `shes`.
+6. Strip `ing` for remaining tokens longer than 5 characters.
+7. Strip `ed` for remaining tokens longer than 4 characters.
+8. Strip a trailing `s` for remaining tokens longer than 3 characters, except words ending in `ss`, `us`, or `is`.
+
+The exception list exists to avoid false-positive collisions such as `status -> statu`, `process -> proces`, and noun/verb collisions like `meeting -> meet`.
+
 ### Score Components
 
 `LexicalSearch.Score()` computes a composite score from five components for each candidate evidence item:
@@ -39,7 +55,7 @@ A candidate that matches all query terms in sequence within a short span scores 
 
 ## Retrieval Policy
 
-`RetrievalPolicy` classifies each incoming query into a mode and applies mode-specific scoring signals on top of the base lexical score.
+`RetrievalPolicy` classifies each incoming query into a mode and applies mode-specific scoring signals on top of the base lexical score. The scoring constants live in `RetrievalWeights.Default`, which preserves the current default behavior but makes every component auditable from one place.
 
 ### Query Mode Detection
 
@@ -51,6 +67,15 @@ A candidate that matches all query terms in sequence within a short span scores 
 | `archive` | Caller is retrieving historical or superseded records |
 | `fact-lifecycle` | Caller is asking about fact status, confirmation, or revision history |
 | `general` | No specific mode detected; broad lexical scoring applies |
+
+The classifier evaluates all mode keyword sets against the normalized query terms, records every matching mode, and then resolves the winner deterministically:
+
+1. Count matched terms per mode.
+2. Pick the mode with the highest matched-term count.
+3. On an exact tie, use fixed precedence:
+   `fact-lifecycle` > `unresolved` > `decision` > `archive` > `current-state` > `general`
+
+Diagnostics expose both the chosen mode and the full `competing_modes` list so tie situations are visible instead of being hidden by a first-match cascade.
 
 ### Per-Evidence Scoring Signals
 

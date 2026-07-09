@@ -31,7 +31,8 @@ try
             options.ContextWindow,
             options.SessionId,
             options.PlannerMode,
-            options.DebugPlanner);
+            options.DebugPlanner,
+            options.IncludeArchived);
         var queryResponse = await new TiroQueryService().QueryAsync(queryRequest, CancellationToken.None);
         Console.Error.WriteLine($"Planner key {queryResponse.PlannerKeyName} found: {queryResponse.PlannerKeyFound}");
         Console.WriteLine(JsonSerializer.Serialize(queryResponse.Packet, jsonOptions));
@@ -102,7 +103,8 @@ try
             options.Filters.DocumentId,
             options.SessionId,
             options.PlannerMode,
-            options.DebugPlanner), CancellationToken.None);
+            options.DebugPlanner,
+            options.IncludeArchived), CancellationToken.None);
         Console.WriteLine(JsonSerializer.Serialize(diagnostics, jsonOptions));
         return;
     }
@@ -180,7 +182,8 @@ try
             options.DebugPlanner,
             GetInt(commandOptions, "session-limit") ?? 10,
             GetInt(commandOptions, "source-limit") ?? 20,
-            GetInt(commandOptions, "document-limit") ?? 20));
+            GetInt(commandOptions, "document-limit") ?? 20,
+            options.IncludeArchived));
         Console.WriteLine(JsonSerializer.Serialize(response, jsonOptions));
         return;
     }
@@ -442,6 +445,29 @@ try
                 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(fact, jsonOptions));
             }
             break;
+        case "archive":
+            {
+                var commandOptions = ParseCommandOptions(options.Arguments);
+                var olderThanDays = GetInt(commandOptions, "older-than-days")
+                    ?? throw new InvalidOperationException("Usage: tiro archive --older-than-days <N> [--dry-run] [--status <status>]");
+                var response = store.Archive(
+                    olderThanDays,
+                    GetBool(commandOptions, "dry-run"),
+                    GetValue(commandOptions, "status"));
+                Console.WriteLine(JsonSerializer.Serialize(response, jsonOptions));
+            }
+            break;
+        case "unarchive":
+            {
+                var commandOptions = ParseCommandOptions(options.Arguments);
+                var evidenceKey = GetValue(commandOptions, "evidence-key");
+                var allSince = GetValue(commandOptions, "all-since");
+                var response = store.Unarchive(
+                    evidenceKey,
+                    string.IsNullOrWhiteSpace(allSince) ? null : DateTimeOffset.Parse(allSince, null, System.Globalization.DateTimeStyles.RoundtripKind));
+                Console.WriteLine(JsonSerializer.Serialize(response, jsonOptions));
+            }
+            break;
         case "fact-list":
             {
                 string? statusFilter = null;
@@ -637,7 +663,7 @@ static void WriteHelp()
     Console.WriteLine("Usage:");
     Console.WriteLine("  tiro [--db <path>] init");
     Console.WriteLine("  tiro [--db <path>] ingest-chunks <path>");
-    Console.WriteLine("  tiro [--db <path>] [--limit <n>] [--source-id <id>] [--document-id <id>] [--context-window 0..2] [--session-id <id>] [--planner on|off|auto] [--debug-planner] query <query>");
+    Console.WriteLine("  tiro [--db <path>] [--limit <n>] [--source-id <id>] [--document-id <id>] [--context-window 0..2] [--session-id <id>] [--planner on|off|auto] [--debug-planner] [--include-archived] query <query>");
     Console.WriteLine("  tiro [--db <path>] --session-id <id> ingest-session-note --source-identity <identity> --text <text> [--direction user|assistant|operator|system] [--timestamp-utc <iso8601>]");
     Console.WriteLine("  tiro [--db <path>] [--session-id <id>] ingest-operational-record --record-type decision|todo|warning|unknown --source-identity <identity> --text <text> [--timestamp-utc <iso8601>]");
     Console.WriteLine("  tiro [--db <path>] [--session-id <id>] ingest-aichat-session --source-identity <identity> [--file <path>|--latest] [--max-chars <n>] [--timestamp-utc <iso8601>]");
@@ -654,10 +680,10 @@ static void WriteHelp()
     Console.WriteLine("  tiro [--db <path>] [--limit <n>] proxy-recall <query>");
     Console.WriteLine("  tiro [--db <path>] proxy-hydrate <pointer_id>");
     Console.WriteLine("  tiro [--db <path>] [--limit <n>] session-search <query> [--session-limit <n>]");
-    Console.WriteLine("  tiro [--db <path>] [--limit <n>] [--planner on|off|auto] [--debug-planner] recall <query> [--session-limit <n>] [--source-limit <n>] [--document-limit <n>]");
+    Console.WriteLine("  tiro [--db <path>] [--limit <n>] [--planner on|off|auto] [--debug-planner] [--include-archived] recall <query> [--session-limit <n>] [--source-limit <n>] [--document-limit <n>]");
     Console.WriteLine("  tiro [--db <path>] [--limit <n>] session-summary <session_id>");
     Console.WriteLine("  tiro [--db <path>] [--session-id <id>] [--limit <n>] phrase-search <phrase> [--lane session|operational|corpus|facts|all]");
-    Console.WriteLine("  tiro [--db <path>] [--limit <n>] [--source-id <id>] [--document-id <id>] [--session-id <id>] [--planner on|off|auto] [--debug-planner] search-debug <query>");
+    Console.WriteLine("  tiro [--db <path>] [--limit <n>] [--source-id <id>] [--document-id <id>] [--session-id <id>] [--planner on|off|auto] [--debug-planner] [--include-archived] search-debug <query>");
     Console.WriteLine("  tiro [--db <path>] [--session-id <id>] proof-carry-forward [--phrase <text>] [--record-type decision|todo|warning|unknown] [--source-identity <identity>]");
     Console.WriteLine("  tiro [--db <path>] session-create <session_id>");
     Console.WriteLine("  tiro [--db <path>] session-ingest <session_id> <direction> <source_identity> <text>");
@@ -676,6 +702,8 @@ static void WriteHelp()
     Console.WriteLine("  tiro [--db <path>] fact-update-status <fact_id> <new_status>");
     Console.WriteLine("  tiro [--db <path>] fact-supersede <superseding_fact_id> <superseded_fact_id>");
     Console.WriteLine("  tiro [--db <path>] fact-conflict <fact_id_1> <fact_id_2>");
+    Console.WriteLine("  tiro [--db <path>] archive --older-than-days <N> [--dry-run] [--status <status>]");
+    Console.WriteLine("  tiro [--db <path>] unarchive [--evidence-key <key>] [--all-since <iso8601>]");
     Console.WriteLine("  tiro [--db <path>] stats");
     Console.WriteLine("  tiro [--db <path>] semantic-status");
     Console.WriteLine("  tiro [--db <path>] semantic-index [--lanes corpus,session] [--rebuild] [--dry-run] [--limit <n>]");

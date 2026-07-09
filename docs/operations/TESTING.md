@@ -59,6 +59,14 @@ scripts/tiro_memory_proof.sh
 
 Queries a unique token before ingestion (expects zero results), writes it as an operational decision, queries again in the same process, then queries again in a fresh CLI process. All three post-ingest queries must return evidence. Proves persistence across process boundaries.
 
+### Scoring regression snapshot
+
+```bash
+scripts/tiro_scoring_eval.sh --check
+```
+
+Builds a deterministic evaluation database, runs a fixed multi-mode query set, and diffs the ordered top-5 retrieval-policy evidence keys and `final_score` values against `tests/fixtures/scoring_snapshot.jsonl`. Use plain `scripts/tiro_scoring_eval.sh` only when intentionally refreshing the reviewed snapshot.
+
 ### Session checkpoint smoke
 
 ```bash
@@ -166,7 +174,7 @@ Run the applicable items after any change in the categories listed.
 | Change area | Required checks |
 |---|---|
 | Schema or migration | Full build + `dotnet test`; `inspect stats` on a fresh DB |
-| Retrieval or scoring logic | Full build + `dotnet test`; direct CLI smoke; memory proof |
+| Retrieval or scoring logic | Full build + `dotnet test`; `scripts/tiro_scoring_eval.sh --check`; direct CLI smoke; memory proof |
 | Planner logic | Full build + `dotnet test`; targeted query with `--planner off` baseline |
 | Proxy layer | Full build + `dotnet test`; manual corpus smoke (build → inspect → recall) |
 | Wrapper scripts | Manifest build/check; wrapper smoke |

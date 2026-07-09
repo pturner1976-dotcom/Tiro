@@ -69,13 +69,15 @@ public sealed class TiroRecallService
                     result.DocumentId,
                     null,
                     result.IngestedUtc,
+                    false,
+                    null,
                     result.Score + DocumentDiscoveryBoost(intent, result.DocumentId, likelyDocuments) + LaneIntentBoost(intent, "corpus"),
                     result.MatchedTerms,
                     result.Snippet,
                     result.Explanation));
             }
 
-            foreach (var record in store.QueryOperationalRecords(expanded, limit))
+            foreach (var record in store.QueryOperationalRecords(expanded, limit, null, request.IncludeArchived))
             {
                 operationalCount++;
                 AddCandidate(evidence, essentialTerms, new TiroRecallEvidenceItem(
@@ -86,13 +88,15 @@ public sealed class TiroRecallService
                     null,
                     record.RecordType,
                     record.CreatedUtc,
+                    record.ArchivedUtc.HasValue,
+                    record.ArchivedUtc,
                     record.Score + ImportanceBoost(record.RecordType) + LaneIntentBoost(intent, "operational"),
                     record.MatchedTerms,
                     record.Snippet,
                     record.Explanation));
             }
 
-            foreach (var fact in store.QueryLifecycleFacts(expanded, limit))
+            foreach (var fact in store.QueryLifecycleFacts(expanded, limit, null, request.IncludeArchived))
             {
                 lifecycleCount++;
                 var terms = LexicalSearch.Tokenize(expanded);
@@ -105,6 +109,8 @@ public sealed class TiroRecallService
                     null,
                     null,
                     fact.CreatedUtc,
+                    fact.ArchivedUtc.HasValue,
+                    fact.ArchivedUtc,
                     score.Score + LaneIntentBoost(intent, "lifecycle"),
                     score.MatchedTerms,
                     LexicalSearch.BuildSnippet(fact.Text, terms),
@@ -130,6 +136,8 @@ public sealed class TiroRecallService
                     null,
                     null,
                     match.TimestampUtc,
+                    false,
+                    null,
                     match.Score + RecencyBoost(match.TimestampUtc) + LaneIntentBoost(intent, "session"),
                     match.MatchedTerms,
                     match.Snippet,
@@ -149,6 +157,8 @@ public sealed class TiroRecallService
                     hit.Lane == "corpus" ? hit.Id.Split(':').FirstOrDefault() : null,
                     null,
                     hit.TimestampUtc,
+                    false,
+                    null,
                     100,
                     LexicalSearch.Tokenize(phrase),
                     hit.TextSnippet,
@@ -174,6 +184,8 @@ public sealed class TiroRecallService
                     hydrated.Item.DocumentId,
                     hydrated.Item.TargetKind,
                     hydrated.Item.TimestampUtc,
+                    false,
+                    null,
                     ProxyEvidenceScore(intent, hydrated.Rank),
                     LexicalSearch.Tokenize($"{query} {proxyResponse.Proxies.ElementAtOrDefault(hydrated.Rank - 1)?.Title ?? string.Empty}"),
                     LexicalSearch.BuildSnippet(hydrated.Item.Text, essentialTerms.ToArray()),

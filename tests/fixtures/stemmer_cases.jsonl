@@ -1,0 +1,42 @@
+{"input":"status","expected":"status","note":"non_plural_s_words: singular noun ending in s must not be truncated"}
+{"input":"bus","expected":"bus","note":"non_plural_s_words: short singular noun remains unchanged"}
+{"input":"gas","expected":"gas","note":"non_plural_s_words: length guard preserves short singular noun"}
+{"input":"plus","expected":"plus","note":"non_plural_s_words: singular noun/adjective ending in us must not be truncated"}
+{"input":"focus","expected":"focus","note":"non_plural_s_words: singular noun ending in us must not be truncated"}
+{"input":"campus","expected":"campus","note":"non_plural_s_words: singular noun ending in us must not be truncated"}
+{"input":"virus","expected":"virus","note":"non_plural_s_words: singular noun ending in us must not be truncated"}
+{"input":"process","expected":"process","note":"non_plural_s_words: singular noun ending in ss must not be truncated"}
+{"input":"analysis","expected":"analysis","note":"non_plural_s_words: singular noun ending in is must not be truncated"}
+{"input":"meeting","expected":"meeting","note":"ing_noun_vs_verb: preserve scheduled-event noun to avoid colliding with meet"}
+{"input":"building","expected":"building","note":"ing_noun_vs_verb: preserve noun to avoid colliding with build"}
+{"input":"billing","expected":"billing","note":"ing_noun_vs_verb: preserve noun to avoid colliding with bill"}
+{"input":"ceiling","expected":"ceiling","note":"ing_noun_vs_verb: preserve noun to avoid colliding with ceil"}
+{"input":"deploying","expected":"deploy","note":"ing_noun_vs_verb: verb should collapse to base stem"}
+{"input":"testing","expected":"test","note":"ing_noun_vs_verb: verb should collapse to base stem"}
+{"input":"logging","expected":"logg","note":"ing_noun_vs_verb: current simple suffix stripping keeps deterministic non-dictionary stem"}
+{"input":"bed","expected":"bed","note":"short_ed_words: three-letter word stays unchanged"}
+{"input":"red","expected":"red","note":"short_ed_words: three-letter word stays unchanged"}
+{"input":"speed","expected":"speed","note":"short_ed_words: preserve noun ending in ed-like suffix to avoid false-positive truncation"}
+{"input":"need","expected":"need","note":"short_ed_words: four-letter word stays unchanged under length guard"}
+{"input":"source","expected":"source","note":"regular_plurals: singular stays unchanged"}
+{"input":"sources","expected":"source","note":"regular_plurals: bare s plural collapses to singular"}
+{"input":"decision","expected":"decision","note":"regular_plurals: singular stays unchanged"}
+{"input":"decisions","expected":"decision","note":"regular_plurals: bare s plural collapses to singular"}
+{"input":"warning","expected":"warning","note":"regular_plurals: singular stays unchanged"}
+{"input":"warnings","expected":"warning","note":"regular_plurals: bare s plural collapses to singular"}
+{"input":"buses","expected":"bus","note":"regular_plurals: es plural collapses correctly to bus"}
+{"input":"boxes","expected":"box","note":"regular_plurals: es plural collapses correctly"}
+{"input":"classes","expected":"class","note":"regular_plurals: es plural collapses correctly"}
+{"input":"processes","expected":"process","note":"regular_plurals: es plural collapses correctly without truncating singular process"}
+{"input":"patches","expected":"patch","note":"regular_plurals: ches plural collapses correctly"}
+{"input":"wishes","expected":"wish","note":"regular_plurals: shes plural collapses correctly"}
+{"input":"policies","expected":"policy","note":"regular_plurals: ies plural collapses to y"}
+{"input":"queries","expected":"query","note":"regular_plurals: ies plural collapses to y"}
+{"input":"Tiro's","expected":"tiro","note":"possessives: possessive form collapses to base token"}
+{"input":"agent's","expected":"agent","note":"possessives: possessive form collapses to base token"}
+{"input":"owner's","expected":"owner","note":"possessives: possessive form collapses to base token"}
+{"input":"deployers","expected":"deployer","note":"regular_plurals: bare s plural collapses to singular"}
+{"input":"closed","expected":"clos","note":"ed_forms: simple ed stripping remains deterministic"}
+{"input":"archived","expected":"archiv","note":"ed_forms: simple ed stripping remains deterministic"}
+{"input":"important","expected":"important","note":"control: unrelated word remains unchanged"}
+{"input":"state","expected":"state","note":"control: unrelated word remains unchanged"}

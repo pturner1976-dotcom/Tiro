@@ -534,6 +534,256 @@ Run("lifecycle policy demotes superseded facts and warns on stale best evidence"
     return Task.CompletedTask;
 });
 
+Run("m023 default retrieval weights preserve fixture scoring snapshots", () =>
+{
+    using var store = BuildScoringFixtureStore("weights_snapshot");
+    var planner = PlannerRunResult.Disabled(Config(PlannerMode.Off, null, false), "provenance retrieval");
+    var packet = new ContextPacketBuilder(store).Build(
+        "provenance retrieval",
+        5,
+        planner,
+        "GEMINI_API_KEY",
+        new RetrievalFilters(null, null),
+        0);
+    AssertEqual(
+        "corpus|m003_quality_chunk_0001,corpus|m003_quality_chunk_0002,corpus|m003_quality_chunk_0004,corpus|m002_fixture_chunk_0002,corpus|m002_fixture_chunk_0001",
+        string.Join(',', packet.RetrievalPolicy.Signals.Select(signal => signal.EvidenceKey)));
+    AssertEqual("233,179,147,147,129", string.Join(',', packet.RetrievalPolicy.Signals.Select(signal => signal.FinalScore)));
+    AssertEqual(true, packet.RetrievalPolicy.Signals[0].Explanation.Contains("CorpusArchiveModeBonus=35", StringComparison.Ordinal));
+    AssertEqual(true, packet.RetrievalPolicy.Signals[0].Explanation.Contains("RecencyWithinFiveMinutesScore=40", StringComparison.Ordinal));
+
+    var archivePacket = new ContextPacketBuilder(store).Build(
+        "archive deployment token owner",
+        5,
+        PlannerRunResult.Disabled(Config(PlannerMode.Off, null, false), "archive deployment token owner"),
+        "GEMINI_API_KEY",
+        new RetrievalFilters(null, null),
+        0);
+    AssertEqual(
+        "corpus|m009_policy_archive_chunk_0001,corpus|m002_fixture_chunk_0001",
+        string.Join(',', archivePacket.RetrievalPolicy.Signals.Select(signal => signal.EvidenceKey)));
+    AssertEqual("290,129", string.Join(',', archivePacket.RetrievalPolicy.Signals.Select(signal => signal.FinalScore)));
+    return Task.CompletedTask;
+});
+
+Run("m024 stemmer fixture cases pass", () =>
+{
+    var rows = LoadStemmerCases();
+    AssertEqual(true, rows.Count >= 40);
+    foreach (var row in rows)
+    {
+        var tokens = LexicalSearch.Tokenize(row.Input);
+        if (tokens.Count == 0)
+        {
+            throw new InvalidOperationException($"Stemmer fixture produced no tokens for '{row.Input}' ({row.Note}).");
+        }
+
+        AssertEqual(row.Expected, tokens[0]);
+    }
+
+    return Task.CompletedTask;
+});
+
+Run("m025 competing modes are visible and plurality resolution is deterministic", async () =>
+{
+    var tieTerms = LexicalSearch.Tokenize("todo decided");
+    var tiePolicy = RetrievalPolicy.Build(
+        tieTerms,
+        Array.Empty<RetrievalResult>(),
+        Array.Empty<SessionMessageEvidence>(),
+        Array.Empty<OperationalMemoryEvidence>(),
+        Array.Empty<FactRecord>());
+    AssertEqual("unresolved", tiePolicy.QueryMode);
+    AssertEqual("unresolved,decision", string.Join(',', tiePolicy.CompetingModes.Select(match => match.Mode)));
+    AssertEqual("todo", tiePolicy.CompetingModes.Single(match => match.Mode == RetrievalPolicy.Unresolved).MatchedTerms[0]);
+    AssertEqual("decid", tiePolicy.CompetingModes.Single(match => match.Mode == RetrievalPolicy.Decision).MatchedTerms[0]);
+    AssertContains(new[] { tiePolicy.ModeReason }, "tie resolved by precedence");
+
+    var pluralityTerms = LexicalSearch.Tokenize("todo decision decided");
+    var pluralityPolicy = RetrievalPolicy.Build(
+        pluralityTerms,
+        Array.Empty<RetrievalResult>(),
+        Array.Empty<SessionMessageEvidence>(),
+        Array.Empty<OperationalMemoryEvidence>(),
+        Array.Empty<FactRecord>());
+    AssertEqual("decision", pluralityPolicy.QueryMode);
+    AssertContains(new[] { pluralityPolicy.ModeReason }, "plurality over 1 unresolved term");
+
+    var singleModePolicy = RetrievalPolicy.Build(
+        LexicalSearch.Tokenize("current latest"),
+        Array.Empty<RetrievalResult>(),
+        Array.Empty<SessionMessageEvidence>(),
+        Array.Empty<OperationalMemoryEvidence>(),
+        Array.Empty<FactRecord>());
+    AssertEqual("current-state", singleModePolicy.QueryMode);
+    AssertEqual(1, singleModePolicy.CompetingModes.Count);
+
+    using var store = BuildOperationalStore("m025_search_debug");
+    var diagnostics = await new RetrievalDiagnostics().SearchDebugAsync(new TiroSearchDebugRequest(
+        store.DatabasePath,
+        "todo decision decided",
+        5,
+        null,
+        null,
+        "session-alpha",
+        PlannerMode.Off,
+        true));
+    AssertEqual("decision", diagnostics.QueryMode);
+    AssertEqual("unresolved,decision", string.Join(',', diagnostics.CompetingModes.Select(match => match.Mode)));
+});
+
+Run("m026 archive migration adds archived columns with null backfill", () =>
+{
+    var path = Path.Combine("/tmp", $"tiro_m026_migration_{Guid.NewGuid():N}.sqlite3");
+    var sql = """
+        CREATE TABLE schema_info (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO schema_info (key, value) VALUES ('schema_version', '2');
+        CREATE TABLE sources (
+            source_id TEXT PRIMARY KEY,
+            source_name TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_utc TEXT NOT NULL,
+            last_ingested_utc TEXT
+        );
+        CREATE TABLE operational_records (
+            record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_type TEXT NOT NULL,
+            created_utc TEXT NOT NULL,
+            text TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            session_id TEXT,
+            status TEXT NOT NULL,
+            linked_source_ids TEXT NOT NULL DEFAULT '',
+            linked_message_ids TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE facts (
+            fact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_utc TEXT NOT NULL,
+            text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            origin_identity TEXT NOT NULL DEFAULT '',
+            session_id TEXT,
+            linked_source_ids TEXT NOT NULL DEFAULT '',
+            linked_message_ids TEXT NOT NULL DEFAULT '',
+            linked_record_ids TEXT NOT NULL DEFAULT '',
+            supersedes_fact_id INTEGER,
+            superseded_by_fact_id INTEGER,
+            freshness_hint TEXT,
+            expires_utc TEXT
+        );
+        INSERT INTO sources (source_id, source_name, source_path, status, created_utc) VALUES ('source:m026', 'm026', '/fixture/m026', 'active', '2026-05-01T00:00:00Z');
+        INSERT INTO operational_records (record_type, created_utc, text, origin, status, linked_source_ids, linked_message_ids) VALUES ('warning', '2026-05-01T00:00:00Z', 'migration warning', 'test:m026', 'closed', '', '');
+        INSERT INTO facts (created_utc, text, status, source_id, origin_identity, linked_source_ids, linked_message_ids, linked_record_ids) VALUES ('2026-05-01T00:00:00Z', 'migration fact', 'stale', 'source:m026', 'test:m026', '', '', '');
+        """;
+    var sqlite = new ProcessStartInfo
+    {
+        FileName = "sqlite3",
+        RedirectStandardError = true,
+        RedirectStandardOutput = true,
+        UseShellExecute = false
+    };
+    sqlite.ArgumentList.Add(path);
+    sqlite.ArgumentList.Add(sql);
+    using (var process = Process.Start(sqlite) ?? throw new InvalidOperationException("Failed to start sqlite3 for migration test."))
+    {
+        process.WaitForExit();
+        AssertEqual(0, process.ExitCode);
+    }
+
+    using var store = TiroStore.Open(path);
+    store.InitializeSchema();
+    var fact = store.ListFacts(null, 10).Single(item => item.Text == "migration fact");
+    var record = store.ListOperationalRecords(null, null, 10).Single(item => item.Text == "migration warning");
+    AssertEqual<DateTimeOffset?>(null, fact.ArchivedUtc);
+    AssertEqual<DateTimeOffset?>(null, record.ArchivedUtc);
+    return Task.CompletedTask;
+});
+
+Run("m027 archive defaults are conservative, reversible, and include-archived is explicit", async () =>
+{
+    using var store = EmptyStore("m027_archive");
+    var staleFact = store.AddFact(
+        "Archive obsolete launch window marker",
+        "source:m027",
+        "test:m027",
+        TiroStore.FactStatus.Stale,
+        createdUtc: DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
+    var supersededFact = store.AddFact(
+        "Archive superseded owner marker",
+        "source:m027",
+        "test:m027",
+        TiroStore.FactStatus.Superseded,
+        createdUtc: DateTimeOffset.Parse("2026-05-01T00:01:00Z"));
+    var activeFact = store.AddFact(
+        "Archive active override marker",
+        "source:m027",
+        "test:m027",
+        TiroStore.FactStatus.Active,
+        createdUtc: DateTimeOffset.Parse("2026-05-01T00:02:00Z"));
+    var closedRecord = store.AddOperationalRecord(
+        "warning",
+        "Archive closed warning marker",
+        "test:m027",
+        status: "closed",
+        createdUtc: DateTimeOffset.Parse("2026-05-01T00:03:00Z"));
+    var openRecord = store.AddOperationalRecord(
+        "todo",
+        "Archive open todo marker",
+        "test:m027",
+        status: "open",
+        createdUtc: DateTimeOffset.Parse("2026-05-01T00:04:00Z"));
+
+    var before = await QueryService(store.DatabasePath, "obsolete launch window marker");
+    var beforeSignal = before.Packet.RetrievalPolicy.Signals.Single(signal => signal.EvidenceKey == "fact|" + staleFact.FactId);
+
+    var dryRun = store.Archive(30, true);
+    AssertEqual(3, dryRun.ArchivedCount);
+    AssertEqual(true, dryRun.Candidates.Any(candidate => candidate.EvidenceKey == $"operational|{closedRecord.RecordId}"));
+    AssertEqual(true, store.ListFacts(null, 10).All(item => item.ArchivedUtc is null));
+
+    var archived = store.Archive(30, false);
+    AssertEqual(3, archived.ArchivedCount);
+    AssertEqual(true, archived.Candidates.All(candidate => candidate.EvidenceKey != $"fact|{activeFact.FactId}"));
+    AssertContains(archived.Warnings, "UPDATE-only semantics");
+
+    var storedFacts = store.ListFacts(null, 10);
+    AssertEqual(true, storedFacts.Single(item => item.FactId == staleFact.FactId).ArchivedUtc.HasValue);
+    AssertEqual(true, storedFacts.Single(item => item.FactId == supersededFact.FactId).ArchivedUtc.HasValue);
+    AssertEqual<DateTimeOffset?>(null, storedFacts.Single(item => item.FactId == activeFact.FactId).ArchivedUtc);
+
+    var storedRecords = store.ListOperationalRecords(null, null, 10);
+    AssertEqual(true, storedRecords.Single(item => item.RecordId == closedRecord.RecordId).ArchivedUtc.HasValue);
+    AssertEqual<DateTimeOffset?>(null, storedRecords.Single(item => item.RecordId == openRecord.RecordId).ArchivedUtc);
+
+    var afterDefault = await QueryService(store.DatabasePath, "obsolete launch window marker");
+    AssertEqual(false, afterDefault.Packet.Facts.Any(fact => fact.FactId == staleFact.FactId));
+
+    var afterIncluded = await QueryService(store.DatabasePath, "obsolete launch window marker", includeArchived: true);
+    AssertEqual(true, afterIncluded.Packet.Facts.Any(fact => fact.FactId == staleFact.FactId && fact.ArchivedUtc.HasValue));
+    var includedSignal = afterIncluded.Packet.RetrievalPolicy.Signals.Single(signal => signal.EvidenceKey == "fact|" + staleFact.FactId);
+    AssertEqual(beforeSignal.FinalScore, includedSignal.FinalScore);
+    AssertEqual(true, includedSignal.Archived);
+
+    var recallDefault = new TiroRecallService().Recall(new TiroRecallRequest(store.DatabasePath, "obsolete launch window marker", 5, PlannerMode.Off));
+    AssertEqual(false, recallDefault.Evidence.Any(item => item.EvidenceId == $"fact:{staleFact.FactId}"));
+    var recallIncluded = new TiroRecallService().Recall(new TiroRecallRequest(store.DatabasePath, "obsolete launch window marker", 5, PlannerMode.Off, false, 10, 20, 20, true));
+    AssertEqual(true, recallIncluded.Evidence.Any(item => item.EvidenceId == $"fact:{staleFact.FactId}" && item.Archived));
+
+    var overrideResponse = store.Archive(30, false, "active");
+    AssertEqual("active", overrideResponse.StatusOverride);
+    AssertEqual(true, overrideResponse.Candidates.Any(candidate => candidate.EvidenceKey == $"fact|{activeFact.FactId}"));
+    AssertEqual(true, store.ListFacts(null, 10).Single(item => item.FactId == activeFact.FactId).ArchivedUtc.HasValue);
+
+    var unarchive = store.Unarchive($"fact|{staleFact.FactId}");
+    AssertEqual(1, unarchive.UnarchivedCount);
+    var afterUnarchive = await QueryService(store.DatabasePath, "obsolete launch window marker");
+    var restoredSignal = afterUnarchive.Packet.RetrievalPolicy.Signals.Single(signal => signal.EvidenceKey == "fact|" + staleFact.FactId);
+    AssertEqual(beforeSignal.FinalScore, restoredSignal.FinalScore);
+    AssertEqual(false, restoredSignal.Archived);
+});
+
 Run("service query with planner off returns context packet", async () =>
 {
     using var store = BuildFixtureStore("service_basic");
@@ -1539,7 +1789,8 @@ static Task<TiroQueryResponse> QueryService(
     int contextWindow = 0,
     string? sessionId = null,
     PlannerMode plannerMode = PlannerMode.Off,
-    bool debugPlanner = false)
+    bool debugPlanner = false,
+    bool includeArchived = false)
 {
     return new TiroQueryService().QueryAsync(new TiroQueryRequest(
         databasePath,
@@ -1550,7 +1801,8 @@ static Task<TiroQueryResponse> QueryService(
         contextWindow,
         sessionId,
         plannerMode,
-        debugPlanner));
+        debugPlanner,
+        includeArchived));
 }
 
 static (int ExitCode, string Stdout, string Stderr) RunCli(params string[] arguments)
@@ -1586,6 +1838,13 @@ static TiroStore BuildFixtureStore(string name)
     var store = TiroStore.Open(path);
     store.IngestChunks(Path.Combine(Directory.GetCurrentDirectory(), "tests", "fixtures", "m002_chunks.jsonl"));
     store.IngestChunks(Path.Combine(Directory.GetCurrentDirectory(), "tests", "fixtures", "m003_retrieval_chunks.jsonl"));
+    return store;
+}
+
+static TiroStore BuildScoringFixtureStore(string name)
+{
+    var store = BuildFixtureStore(name);
+    store.IngestChunks(Path.Combine(Directory.GetCurrentDirectory(), "tests", "fixtures", "m009_policy_chunks.jsonl"));
     return store;
 }
 
@@ -1801,6 +2060,18 @@ static TiroStore BuildPolicyStore(string name)
         createdUtc: DateTimeOffset.Parse("2026-05-10T00:03:00Z"));
     return store;
 }
+
+static IReadOnlyList<StemmerCase> LoadStemmerCases()
+{
+    var path = Path.Combine(Directory.GetCurrentDirectory(), "tests", "fixtures", "stemmer_cases.jsonl");
+    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+    return File.ReadLines(path)
+        .Where(line => !string.IsNullOrWhiteSpace(line))
+        .Select(line => JsonSerializer.Deserialize<StemmerCase>(line, options) ?? throw new InvalidOperationException("Stemmer fixture row did not deserialize."))
+        .ToArray();
+}
+
+sealed record StemmerCase(string Input, string Expected, string Note);
 
 sealed class FakePlannerClient : IRetrievalPlannerClient
 {

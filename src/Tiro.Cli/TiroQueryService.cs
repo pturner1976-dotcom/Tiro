@@ -11,7 +11,8 @@ public sealed record TiroQueryRequest(
     [property: JsonPropertyName("context_window")] int ContextWindow = 0,
     [property: JsonPropertyName("session_id")] string? SessionId = null,
     [property: JsonPropertyName("planner_mode")] PlannerMode PlannerMode = PlannerMode.Auto,
-    [property: JsonPropertyName("debug_planner")] bool DebugPlanner = false);
+    [property: JsonPropertyName("debug_planner")] bool DebugPlanner = false,
+    [property: JsonPropertyName("include_archived")] bool IncludeArchived = false);
 
 public sealed record TiroQueryResponse(
     [property: JsonPropertyName("packet")] ContextPacket Packet,
@@ -57,8 +58,9 @@ public sealed class TiroQueryService
             plannerConfig.KeyName,
             filters,
             request.ContextWindow,
-            sessionId);
-        packet = AddReadModeWarnings(packet, query, sessionId, sourceId);
+            sessionId,
+            request.IncludeArchived);
+        packet = AddReadModeWarnings(packet, query, sessionId, sourceId, request.IncludeArchived);
 
         return new TiroQueryResponse(
             packet,
@@ -84,7 +86,7 @@ public sealed class TiroQueryService
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
-    private static ContextPacket AddReadModeWarnings(ContextPacket packet, string query, string? sessionId, string? sourceId)
+    private static ContextPacket AddReadModeWarnings(ContextPacket packet, string query, string? sessionId, string? sourceId, bool includeArchived)
     {
         var warnings = packet.Warnings.ToList();
         var normalized = query.Trim().ToLowerInvariant();
@@ -104,6 +106,11 @@ public sealed class TiroQueryService
             && !string.IsNullOrWhiteSpace(sessionId))
         {
             warnings.Add(new WarningRecord("This appears to be a whole-session recall request. Use tiro_session_summary."));
+        }
+
+        if (includeArchived)
+        {
+            warnings.Add(new WarningRecord("Archived operational and lifecycle evidence was explicitly included for this query."));
         }
 
         return warnings.Count == packet.Warnings.Count ? packet : packet with { Warnings = warnings };
